@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -23,14 +24,19 @@ from app.models.analysis import (
     Severity,
 )
 from app.models.requirement import (
-    DocumentFormat,
     Requirement,
     RequirementCollection,
     SourceDocument,
 )
+from app.models.set_audit import RequirementSetAudit, SetFinding, VerdictStatus
 from app.services.chunking import DocumentChunker
 from app.services.requirement_analyzer import RequirementAnalyzer
 from app.services.requirement_extractor import RequirementExtractor
+from app.services.set_analyzer import RequirementSetAnalyzer
+
+# The agent's own code: git is queried here, and only changes under it
+# mark the reported commit as dirty.
+_AGENT_DIR = Path(__file__).resolve().parent
 
 app = typer.Typer(
     name="requirements-reviewer",
@@ -70,14 +76,19 @@ def analyze(
         ),
     ] = True,
 ) -> None:
-    """Извлечь требования и проверить их с помощью LLM."""
+    """Извлечь требования, проверить каждое и весь набор с помощью LLM."""
     try:
         settings = load_settings()
     except SettingsError as exc:
         _fail(f"Ошибка конфигурации: {exc}")
 
     try:
-        llm_client = build_llm_client(settings)
+        extractor_client = build_llm_client(
+            settings.with_model(settings.extractor_model)
+        )
+        auditor_client = build_llm_client(
+            settings.with_model(settings.auditor_model)
+        )
     except LLMConfigurationError as exc:
         _fail(f"Ошибка конфигурации LLM: {exc}")
 
@@ -92,11 +103,14 @@ def analyze(
         overlap_chars=settings.chunk_overlap_chars,
     )
     chunks = chunker.split(document)
-    extractor = RequirementExtractor(llm_client, chunker)
-    analyzer = RequirementAnalyzer(llm_client)
+    passport = _passport(settings, document, len(chunks))
+
+    extractor = RequirementExtractor(extractor_client, chunker)
+    analyzer = RequirementAnalyzer(auditor_client)
+    set_analyzer = RequirementSetAnalyzer(auditor_client)
 
     typer.secho(
-        f"Извлечение требований с помощью LLM ({settings.llm_model})...",
+        f"Извлечение требований с помощью LLM ({settings.extractor_model})...",
         bold=True,
     )
     try:
@@ -112,7 +126,7 @@ def analyze(
         _write_json(
             extraction_path,
             {
-                "passport": _passport(settings, document, len(chunks)),
+                "passport": passport,
                 "requirements": [
                     requirement.model_dump(mode="json")
                     for requirement in collection.requirements
@@ -122,7 +136,8 @@ def analyze(
         typer.echo(f"Результат извлечения сохранён: {extraction_path}")
 
     typer.secho(
-        f"Извлечено требований: {len(collection)}. Запуск анализа...",
+        f"Извлечено требований: {len(collection)}. "
+        f"Анализ каждого требования ({settings.auditor_model})...",
         bold=True,
     )
     try:
@@ -141,25 +156,41 @@ def analyze(
         _fail(f"Ошибка LLM при анализе требований: {exc}")
 
     analysis_path = _json_path(output_path, "analysis")
+    analysis_payload: dict[str, object] = {
+        "passport": passport,
+        "summary": _summary(analyses),
+        "analyses": [
+            analysis.model_dump(mode="json") for analysis in analyses.analyses
+        ],
+    }
+    if save_json:
+        _write_json(analysis_path, analysis_payload)
+
+    typer.secho("Проверка набора требований целиком...", bold=True)
+    try:
+        set_audit = set_analyzer.analyze(document.text, collection, analyses.analyses)
+    except LLMError as exc:
+        if save_json:
+            typer.secho(
+                "Промежуточные результаты сохранены: "
+                f"{extraction_path}, {analysis_path}",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        _fail(f"Ошибка LLM при проверке набора требований: {exc}")
+
     if save_json:
         _write_json(
             analysis_path,
-            {
-                "passport": _passport(settings, document, len(chunks)),
-                "summary": _summary(analyses),
-                "analyses": [
-                    analysis.model_dump(mode="json")
-                    for analysis in analyses.analyses
-                ],
-            },
+            {**analysis_payload, "set_audit": set_audit.model_dump(mode="json")},
         )
 
     _write_report(
         output_path,
-        document=document,
+        passport=passport,
         collection=collection,
         analyses=analyses,
-        settings=settings,
+        set_audit=set_audit,
         chunk_count=len(chunks),
     )
 
@@ -169,6 +200,7 @@ def analyze(
         analysis_path=analysis_path if save_json else None,
         collection=collection,
         analyses=analyses,
+        set_audit=set_audit,
     )
 
 
@@ -184,6 +216,7 @@ def _print_summary(
     analysis_path: Path | None,
     collection: RequirementCollection,
     analyses: RequirementAnalysisCollection,
+    set_audit: RequirementSetAudit,
 ) -> None:
     """Print a short execution summary."""
     status_counts = analyses.by_status()
@@ -192,11 +225,24 @@ def _print_summary(
     for status in RequirementStatus:
         typer.echo(f"  {status.value}: {status_counts.get(status, 0)}")
     typer.echo(f"  Находок: {analyses.finding_count}")
+    typer.echo(f"  Находок уровня набора: {len(set_audit.findings)}")
+    typer.secho(
+        f"  Вердикт: {set_audit.verdict.value}", fg=_verdict_color(set_audit.verdict)
+    )
     typer.echo(f"  Отчёт: {output_path}")
     if extraction_path is not None:
         typer.echo(f"  JSON извлечения: {extraction_path}")
     if analysis_path is not None:
         typer.echo(f"  JSON анализа: {analysis_path}")
+
+
+def _verdict_color(verdict: VerdictStatus) -> str:
+    """Console color of a verdict."""
+    if verdict is VerdictStatus.BLOCKED:
+        return typer.colors.RED
+    if verdict is VerdictStatus.NEEDS_REVISION:
+        return typer.colors.YELLOW
+    return typer.colors.GREEN
 
 
 def _passport(
@@ -209,10 +255,36 @@ def _passport(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "agent": settings.agent_name,
         "agent_version": settings.agent_version,
-        "llm_model": settings.llm_model,
+        "commit": get_git_commit(),
+        "extractor_model": settings.extractor_model,
+        "auditor_model": settings.auditor_model,
         "llm_base_url": settings.llm_base_url,
         "chunks": chunk_count,
     }
+
+
+def get_git_commit() -> str:
+    """Return the short hash of the agent's commit, or ``unknown`` outside git.
+
+    The hash carries a ``-dirty`` suffix while the agent code differs from
+    the commit, so a report never names a commit that cannot reproduce it.
+    """
+    try:
+        commit = _git("rev-parse", "--short", "HEAD")
+        changes = _git("status", "--porcelain", "--", ".")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return f"{commit}-dirty" if changes else commit
+
+
+def _git(*args: str) -> str:
+    """Run a read-only git command in the agent's directory."""
+    return subprocess.check_output(
+        ["git", *args],
+        cwd=_AGENT_DIR,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -252,25 +324,18 @@ def _summary(analyses: RequirementAnalysisCollection) -> dict[str, object]:
 def _write_report(
     output: Path,
     *,
-    document: SourceDocument,
+    passport: dict[str, object],
     collection: RequirementCollection,
     analyses: RequirementAnalysisCollection,
-    settings: Settings,
+    set_audit: RequirementSetAudit,
     chunk_count: int,
 ) -> None:
-    """Write a plain Markdown report with structured LLM results.
-
-    This is deliberately not the final polished report: it exposes the
-    extraction and per-requirement findings so the run can be verified.
-    """
-    passport = _passport(settings, document, chunk_count)
+    """Write the Markdown report with both analysis levels and the verdict."""
     summary = _summary(analyses)
     lines: list[str] = [
         "# Отчёт проверки требований (LLM-анализ)",
         "",
         "> Отчёт сформирован автоматически по результатам реального вызова LLM.",
-        "> Финальная редакторская версия отчёта и проверка набора требований",
-        "> целиком — следующий этап проекта.",
         "",
         "## Паспорт прогона",
         "",
@@ -281,7 +346,9 @@ def _write_report(
         f"| Дата прогона | {_cell(str(passport['generated_at']))} |",
         f"| Агент | {_cell(str(passport['agent']))}, "
         f"версия {_cell(str(passport['agent_version']))} |",
-        f"| LLM-модель | {_cell(str(passport['llm_model'] or '—'))} |",
+        f"| Коммит агента | {_cell(str(passport['commit']))} |",
+        f"| Модель извлечения | {_cell(str(passport['extractor_model'] or '—'))} |",
+        f"| Модель аудита | {_cell(str(passport['auditor_model'] or '—'))} |",
         f"| LLM base URL | {_cell(str(passport['llm_base_url']))} |",
         f"| Чанков отправлено | {chunk_count} |",
         f"| Требований извлечено | {len(collection)} |",
@@ -326,12 +393,15 @@ def _write_report(
     if not analyses.analyses:
         lines.extend(["Требования для анализа отсутствуют.", ""])
 
+    lines.extend(_set_audit_lines(set_audit, collection))
+
     lines.extend(
         [
             "## Сводка",
             "",
             f"- Требований: {summary['requirements']}.",
             f"- Находок: {summary['findings']}.",
+            f"- Находок уровня набора: {len(set_audit.findings)}.",
         ]
     )
     status_summary = summary["status"]
@@ -350,30 +420,103 @@ def _write_report(
         for finding in analysis.findings
         if finding.severity in {Severity.HIGH, Severity.CRITICAL}
     ]
-    if critical:
+    blocking = [
+        finding
+        for finding in set_audit.findings
+        if finding.severity in {Severity.HIGH, Severity.CRITICAL}
+    ]
+    if critical or blocking:
         lines.extend(["## Критичные и высокие дефекты", ""])
         for requirement_id, finding in critical:
             lines.append(
                 f"- **{requirement_id}** ({finding.severity.value}, "
                 f"{finding.criterion.value}): {finding.explanation}"
             )
+        for finding in blocking:
+            lines.append(
+                f"- **Набор требований** ({finding.severity.value}, "
+                f"{finding.category.value}): {finding.title}"
+            )
         lines.append("")
 
-    lines.extend(
-        [
-            "## Ограничения текущего этапа",
-            "",
-            "- Проверяется каждое требование отдельно; consistency сверяется с",
-            "  полным набором, но отдельный агрегированный анализ всего набора",
-            "  (покрытие, дубликаты, полнота) ещё не реализован.",
-            "- Итоговый отчёт не проходит редакторскую полировку и не содержит",
-            "  финального вердикта о готовности к разработке.",
-            "",
-        ]
-    )
+    lines.extend(_verdict_lines(set_audit))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _set_audit_lines(
+    set_audit: RequirementSetAudit, collection: RequirementCollection
+) -> list[str]:
+    """Render the set-level audit: summary, goal coverage and its findings."""
+    lines = [
+        "## Проверка всего набора требований",
+        "",
+        set_audit.summary,
+        "",
+        f"**Покрытие целей.** {set_audit.goal_coverage}",
+        "",
+    ]
+    if not set_audit.findings:
+        lines.extend(["Дефектов уровня всего набора не найдено.", ""])
+
+    original_ids = {
+        requirement.id: requirement.original_id for requirement in collection.requirements
+    }
+    for number, finding in enumerate(set_audit.findings, start=1):
+        lines.extend(_set_finding_lines(number, finding, original_ids))
+
+    if set_audit.excluded_findings:
+        lines.extend(
+            [
+                f"> Исключено находок без подтверждённых цитат: "
+                f"{set_audit.excluded_findings}. Модель сообщила о них, но дословные",
+                "> цитаты в документе не найдены, поэтому они не показаны как нарушения",
+                "> и требуют ручной проверки.",
+                "",
+            ]
+        )
+    return lines
+
+
+def _set_finding_lines(
+    number: int, finding: SetFinding, original_ids: dict[str, str | None]
+) -> list[str]:
+    """Render one set-level finding together with its verified quotes."""
+    related = ", ".join(
+        requirement_id if not original_ids.get(requirement_id)
+        else f"{requirement_id} ({original_ids[requirement_id]})"
+        for requirement_id in finding.related_req_ids
+    )
+    lines = [
+        f"### {number}. {finding.title}",
+        "",
+        f"- Категория: {finding.category.value}",
+        f"- Severity: {finding.severity.value}",
+        f"- Связанные требования: {related or '—'}",
+        f"- Описание: {finding.description}",
+        "- Доказательство:",
+    ]
+    for quote in finding.evidence:
+        lines.append(f"  - «{_cell(quote)}»")
+    lines.append("")
+    return lines
+
+
+def _verdict_lines(set_audit: RequirementSetAudit) -> list[str]:
+    """Render the final verdict and what to fix first."""
+    lines = [
+        "## Итог",
+        "",
+        f"**Вердикт: {set_audit.verdict.value}.** {set_audit.verdict_reason}",
+        "",
+    ]
+    if set_audit.priority_actions:
+        lines.extend(["Что исправить в первую очередь:", ""])
+        for number, action in enumerate(set_audit.priority_actions, start=1):
+            lines.append(f"{number}. {_cell(action)}")
+        lines.append("")
+    return lines
 
 
 def _location_label(requirement: Requirement) -> str:
