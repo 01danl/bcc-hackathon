@@ -22,6 +22,7 @@ from app.models.requirement import Requirement, RequirementCollection
 from app.prompts import load_prompt
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_MARKDOWN_MARKERS_RE = re.compile(r"[*_`]+")
 
 ProgressCallback = Callable[[int, int, Requirement], None]
 
@@ -156,5 +157,6 @@ def _ensure_evidence_is_verbatim(
 
 
 def _normalize_for_matching(text: str) -> str:
-    """Normalize whitespace and case for evidence substring checks."""
-    return _WHITESPACE_RE.sub(" ", text).strip().casefold()
+    """Normalize case, whitespace and Markdown markers for evidence checks."""
+    without_markers = _MARKDOWN_MARKERS_RE.sub("", text)
+    return _WHITESPACE_RE.sub(" ", without_markers).strip().casefold()

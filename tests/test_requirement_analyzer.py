@@ -140,6 +140,34 @@ class TestRequirementAnalyzer:
 
         assert len(client.calls) == 2
 
+    def test_evidence_ignores_markdown_markers(self) -> None:
+        collection = RequirementCollection(
+            requirements=[
+                Requirement(
+                    id="REQ-001",
+                    text="Ф-1. Система должна отправлять push.",
+                    location=SourceLocation(section="Требования"),
+                )
+            ]
+        )
+        finding = LLMFinding(
+            severity=Severity.MEDIUM,
+            criterion=QualityCriterion.VERIFIABILITY,
+            explanation="Не указан проверяемый результат.",
+            evidence="Ф-1. Система должна отправлять push.",
+            recommendation="Добавить наблюдаемый результат.",
+        )
+        client = FakeClient([LLMAnalysisResponse(findings=[finding])])
+        analyzer = RequirementAnalyzer(client)  # type: ignore[arg-type]
+
+        analysis = analyzer.analyze(
+            collection.requirements[0],
+            collection,
+            document_text="* **Ф-1.** Система должна отправлять push.",
+        )
+
+        assert analysis.status is RequirementStatus.WARNING
+
     def test_analyze_all_calls_progress_and_returns_collection(self) -> None:
         collection = _collection()
         client = FakeClient(
