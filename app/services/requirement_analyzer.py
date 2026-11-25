@@ -9,7 +9,6 @@ otherwise the analysis is rejected and retried once.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable
 
 from app.llm.client import LLMClient, LLMResponseError
@@ -20,9 +19,7 @@ from app.models.analysis import (
 )
 from app.models.requirement import Requirement, RequirementCollection
 from app.prompts import load_prompt
-
-_WHITESPACE_RE = re.compile(r"\s+")
-_MARKDOWN_MARKERS_RE = re.compile(r"[*_`]+")
+from app.services.evidence import normalize_for_matching
 
 ProgressCallback = Callable[[int, int, Requirement], None]
 
@@ -142,9 +139,9 @@ def _ensure_evidence_is_verbatim(
     requirement_id: str,
 ) -> None:
     """Reject findings whose evidence is not present in the source text."""
-    haystack = _normalize_for_matching(document_text)
+    haystack = normalize_for_matching(document_text)
     for finding in response.findings:
-        needle = _normalize_for_matching(finding.evidence)
+        needle = normalize_for_matching(finding.evidence)
         if not needle:
             raise LLMResponseError(
                 f"{requirement_id}: {finding.criterion.value} finding has empty evidence."
@@ -154,9 +151,3 @@ def _ensure_evidence_is_verbatim(
                 f"{requirement_id}: evidence for the {finding.criterion.value} "
                 "finding is not an exact fragment of the source document."
             )
-
-
-def _normalize_for_matching(text: str) -> str:
-    """Normalize case, whitespace and Markdown markers for evidence checks."""
-    without_markers = _MARKDOWN_MARKERS_RE.sub("", text)
-    return _WHITESPACE_RE.sub(" ", without_markers).strip().casefold()

@@ -62,6 +62,17 @@ _CATEGORY_ALIASES = {
 }
 
 
+def normalize_severity(value: object) -> Severity:
+    """Accept any case spelling of a severity; unknown values become MEDIUM."""
+    if isinstance(value, Severity):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        if normalized in Severity.__members__:
+            return Severity[normalized]
+    return Severity.MEDIUM
+
+
 class LLMExtractedRequirement(BaseModel):
     """One requirement as returned by the extraction prompt."""
 
@@ -131,13 +142,7 @@ class LLMFinding(BaseModel):
     @field_validator("severity", mode="before")
     @classmethod
     def _normalize_severity(cls, value: object) -> object:
-        if isinstance(value, Severity):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().upper()
-            if normalized in Severity.__members__:
-                return Severity[normalized]
-        return Severity.MEDIUM
+        return normalize_severity(value)
 
     @field_validator("criterion", mode="before")
     @classmethod

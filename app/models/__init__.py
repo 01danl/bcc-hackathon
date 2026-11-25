@@ -20,6 +20,13 @@ from app.models.requirement import (
     SourceDocument,
     SourceLocation,
 )
+from app.models.set_audit import (
+    LLMSetAuditResponse,
+    RequirementSetAudit,
+    SetFinding,
+    SetFindingCategory,
+    VerdictStatus,
+)
 
 __all__ = [
     "DocumentFormat",
@@ -27,6 +34,7 @@ __all__ = [
     "LLMExtractedRequirement",
     "LLMExtractionResponse",
     "LLMFinding",
+    "LLMSetAuditResponse",
     "QualityCriterion",
     "Requirement",
     "RequirementAnalysis",
@@ -34,8 +42,12 @@ __all__ = [
     "RequirementCategory",
     "RequirementCollection",
     "RequirementFinding",
+    "RequirementSetAudit",
     "RequirementStatus",
+    "SetFinding",
+    "SetFindingCategory",
     "Severity",
     "SourceDocument",
     "SourceLocation",
+    "VerdictStatus",
 ]
