@@ -24,14 +24,18 @@ class DocumentFormat(str, Enum):
 class RequirementCategory(str, Enum):
     """Coarse category of a requirement.
 
-    Classification will be performed by an LLM in a later milestone; the
-    placeholder extractor marks everything as ``OTHER``.
+    The LLM classifies requirements into the first seven values. The
+    remaining values are kept for backwards compatibility with documents
+    and code written for the earlier placeholder extractor.
     """
 
     FUNCTIONAL = "functional"
     NON_FUNCTIONAL = "non_functional"
-    DATA = "data"
+    BUSINESS = "business"
+    INTERFACE = "interface"
     INTEGRATION = "integration"
+    CONSTRAINT = "constraint"
+    DATA = "data"
     ACCEPTANCE = "acceptance"
     UI = "ui"
     OTHER = "other"
@@ -40,12 +44,14 @@ class RequirementCategory(str, Enum):
 class SourceLocation(BaseModel):
     """Where a fragment comes from inside the source document.
 
-    Exactly one of the fields is usually set: ``page`` for PDF documents,
-    ``section`` for Markdown documents.
+    Markdown documents usually provide ``section`` (a heading path); PDF
+    documents provide ``page``. ``heading`` is an optional extra heading
+    returned by the LLM when it is more precise than the section path.
     """
 
     page: int | None = Field(default=None, ge=1, description="1-based page number")
-    section: str | None = Field(default=None, description="Section heading")
+    section: str | None = Field(default=None, description="Section heading path")
+    heading: str | None = Field(default=None, description="Nearest heading, if any")
 
 
 class SourceDocument(BaseModel):
