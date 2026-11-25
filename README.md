@@ -53,16 +53,47 @@ pip install -r requirements.txt
    ```dotenv
    LLM_API_KEY=sk-or-v1-ваш-ключ
    LLM_BASE_URL=https://openrouter.ai/api/v1
-   LLM_MODEL=google/gemini-2.5-flash
+   LLM_MODEL=anthropic/claude-haiku-5.5
    # Модели по этапам (без них используется LLM_MODEL):
-   EXTRACTOR_MODEL=google/gemini-2.5-flash
-   AUDITOR_MODEL=openai/gpt-5.3-codex
+   EXTRACTOR_MODEL=anthropic/claude-haiku-5.5
+   AUDITOR_MODEL=meta/muse-ember
+   # Режим рассуждений:
+   EXTRACTOR_EFFORT=low
+   AUDITOR_EFFORT=max
+   # Бюджет ответа (reasoning-токены считаются внутри него):
+   EXTRACTOR_MAX_TOKENS=4000
+   AUDITOR_MAX_TOKENS=16000
    ```
 
 4. Выберите модель в каталоге <https://openrouter.ai/models>. Модель должна
    поддерживать JSON output (`response_format: json_object`); если провайдер
    его не поддерживает, клиент автоматически повторит запрос без этого
    параметра и разберёт JSON безопасным парсером.
+
+### Модели этапов и режим рассуждений
+
+Извлечение идёт моделью `anthropic/claude-haiku-5.5` с
+`reasoning.effort = low`. Проверку каждого требования и всего набора ведёт
+`meta/muse-ember` с `reasoning.effort = max`. Оба слоуга есть в каталоге
+OpenRouter и объявляют параметр `reasoning`.
+
+Обе настройки называются `..._EFFORT` и уходят в одном формате:
+`reasoning: {"effort": ..., "exclude": true}` через `extra_body` клиента
+`openai`. Поле `exclude` убирает thinking-трейс из ответа, но токены всё
+равно тарифицируются как output. Нельзя одновременно слать `reasoning_effort`
+и `reasoning.effort` с разными значениями — OpenRouter вернёт 400, поэтому
+используется только unified-форма.
+
+Допустимые уровни различаются по моделям и проверяются при загрузке `.env`:
+
+| Модель | Доступные `effort` |
+| :--- | :--- |
+| `anthropic/claude-haiku-5.5` | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `meta/muse-ember` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+
+`none` для Muse Ember приведёт к 400: модель всегда думает. Настройки и
+бюджеты токенов попадают в паспорт прогона. Клиент не отправляет
+`temperature` — Haiku 5.5 отвергает любое значение, кроме `1`.
 
 `.env` уже добавлен в `.gitignore`. Ключ никогда не выводится в логах,
 отчёте или сообщениях об ошибках.
@@ -76,6 +107,10 @@ pip install -r requirements.txt
 | `LLM_MODEL` | нет, если заданы модели этапов | — | Модель по умолчанию |
 | `EXTRACTOR_MODEL` | нет | `LLM_MODEL` | Модель извлечения требований |
 | `AUDITOR_MODEL` | нет | `LLM_MODEL` | Модель проверки требований и набора |
+| `EXTRACTOR_EFFORT` | нет | `low` | `reasoning.effort` для извлечения |
+| `AUDITOR_EFFORT` | нет | `max` | `reasoning.effort` для аудита |
+| `EXTRACTOR_MAX_TOKENS` | нет | `4000` | Бюджет ответа экстрактора |
+| `AUDITOR_MAX_TOKENS` | нет | `16000` | Бюджет ответа аудитора |
 | `LLM_TIMEOUT` | нет | `60` | Таймаут одного запроса, секунды |
 | `LLM_MAX_RETRIES` | нет | `2` | Повторы SDK при сетевых ошибках/429 |
 | `LLM_CHUNK_MAX_CHARS` | нет | `6000` | Максимальный размер чанка |

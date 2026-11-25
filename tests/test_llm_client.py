@@ -208,6 +208,80 @@ class TestCompleteJson:
 
         assert len(fake.calls) == 1
 
+    def test_extra_body_is_forwarded(self) -> None:
+        payload = {"requirements": []}
+        fake = _FakeOpenAI([_completion(json.dumps(payload))])
+        client = LLMClient(
+            api_key="sk-or-v1-test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            client=fake,
+            extra_body={"reasoning": {"effort": "low", "exclude": True}},
+        )
+
+        result = client.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            response_model=LLMExtractionResponse,
+        )
+
+        assert result.requirements == []
+        assert fake.calls[0]["extra_body"] == {
+            "reasoning": {"effort": "low", "exclude": True}
+        }
+        assert fake.calls[0]["model"] == "test/model"
+        assert "temperature" not in fake.calls[0]
+
+    def test_max_tokens_is_forwarded(self) -> None:
+        payload = {"requirements": []}
+        fake = _FakeOpenAI([_completion(json.dumps(payload))])
+        client = LLMClient(
+            api_key="sk-or-v1-test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            client=fake,
+            max_tokens=16000,
+        )
+
+        client.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            response_model=LLMExtractionResponse,
+        )
+
+        assert fake.calls[0]["max_tokens"] == 16000
+        assert "temperature" not in fake.calls[0]
+
+    def test_extra_body_survives_json_mode_retry(self) -> None:
+        payload = {"requirements": []}
+        unsupported = _api_error(
+            openai.BadRequestError,
+            "response_format json_object is not supported",
+            400,
+        )
+        fake = _FakeOpenAI([unsupported, _completion(json.dumps(payload))])
+        client = LLMClient(
+            api_key="sk-or-v1-test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            client=fake,
+            extra_body={"reasoning": {"effort": "max", "exclude": True}},
+        )
+
+        result = client.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            response_model=LLMExtractionResponse,
+        )
+
+        assert result.requirements == []
+        assert len(fake.calls) == 2
+        assert all(
+            call["extra_body"] == {"reasoning": {"effort": "max", "exclude": True}}
+            for call in fake.calls
+        )
+        assert "response_format" not in fake.calls[1]
+
 
 class TestApiErrors:
     def test_rate_limit(self) -> None:

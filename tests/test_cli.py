@@ -416,6 +416,51 @@ class TestCliSetAudit:
         assert "| Модель извлечения | fast/model |" in report
         assert "| Модель аудита | heavy/model |" in report
 
+    def test_each_stage_client_gets_its_own_reasoning_mode(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        settings = Settings(
+            llm_api_key="sk-or-v1-secret-test-key",
+            llm_base_url="https://openrouter.ai/api/v1",
+            extractor_model="fast/model",
+            auditor_model="heavy/model",
+            extractor_effort="low",
+            auditor_effort="max",
+            extractor_max_tokens=4000,
+            auditor_max_tokens=16000,
+        )
+        pinned: list[Settings] = []
+
+        def fake_build(p: Settings) -> object:
+            pinned.append(p)
+            return object()
+
+        monkeypatch.setattr("app.cli.load_settings", lambda: settings)
+        monkeypatch.setattr("app.cli.build_llm_client", fake_build)
+        monkeypatch.setattr("app.cli.RequirementExtractor", _stub_extractor())
+        monkeypatch.setattr("app.cli.RequirementAnalyzer", _stub_analyzer())
+        monkeypatch.setattr(
+            "app.cli.RequirementSetAnalyzer", _stub_set_analyzer(_set_audit())
+        )
+
+        _, output_path, _, result = _run(tmp_path)
+        report = output_path.read_text(encoding="utf-8")
+
+        assert result.exit_code == 0
+        assert [item.llm_model for item in pinned] == ["fast/model", "heavy/model"]
+        assert pinned[0].request_extra_body == {
+            "reasoning": {"effort": "low", "exclude": True}
+        }
+        assert pinned[1].request_extra_body == {
+            "reasoning": {"effort": "max", "exclude": True}
+        }
+        assert pinned[0].llm_max_tokens == 4000
+        assert pinned[1].llm_max_tokens == 16000
+        assert "| Режим извлечения | effort=low |" in report
+        assert "| Режим аудита | effort=max |" in report
+        assert "| Бюджет извлечения | 4000 токенов |" in report
+        assert "| Бюджет аудита | 16000 токенов |" in report
+
     def test_passport_names_agent_version_and_commit(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

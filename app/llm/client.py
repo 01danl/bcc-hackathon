@@ -57,6 +57,8 @@ class LLMClient:
         timeout: float = 60.0,
         max_retries: int = 2,
         client: Any | None = None,
+        extra_body: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         if not api_key or not api_key.strip():
             raise LLMConfigurationError(
@@ -74,6 +76,11 @@ class LLMClient:
 
         self._model = model.strip()
         self._timeout = timeout
+        # Provider options such as OpenRouter's reasoning effort are sent as
+        # extra body fields on every request made by this client.
+        self._extra_body = dict(extra_body) if extra_body else None
+        # Reasoning tokens share this budget with the visible answer.
+        self._max_tokens = max_tokens
         # The API key is intentionally not stored on the instance. It is
         # passed straight to the SDK client, which owns it.
         self._client = client or OpenAI(
@@ -130,8 +137,13 @@ class LLMClient:
         request: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": 0,
         }
+        # Claude Haiku 5.5 rejects any temperature other than 1, so no
+        # sampling parameter is sent; prompts stay the source of determinism.
+        if self._max_tokens is not None:
+            request["max_tokens"] = self._max_tokens
+        if self._extra_body:
+            request["extra_body"] = self._extra_body
         try:
             completion = self._client.chat.completions.create(
                 **request,
@@ -140,7 +152,7 @@ class LLMClient:
         except openai.BadRequestError as exc:
             # Some OpenAI-compatible providers do not implement JSON mode.
             # Retry once without response_format, then let the parser and
-            # Pydantic validation handle the answer.
+            # Pydantic validation handle the answer. Provider options stay.
             if not _looks_like_json_mode_error(exc):
                 raise _map_api_error(exc) from exc
             try:
@@ -165,6 +177,8 @@ def build_llm_client(settings: Settings) -> LLMClient:
         model=settings.llm_model,
         timeout=settings.llm_timeout,
         max_retries=settings.llm_max_retries,
+        extra_body=settings.request_extra_body,
+        max_tokens=settings.llm_max_tokens,
     )
 
 

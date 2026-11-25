@@ -13,6 +13,10 @@ _ENV_NAMES = (
     "LLM_MODEL",
     "EXTRACTOR_MODEL",
     "AUDITOR_MODEL",
+    "EXTRACTOR_EFFORT",
+    "AUDITOR_EFFORT",
+    "EXTRACTOR_MAX_TOKENS",
+    "AUDITOR_MAX_TOKENS",
     "LLM_TIMEOUT",
     "LLM_MAX_RETRIES",
     "LLM_CHUNK_MAX_CHARS",
@@ -37,6 +41,10 @@ class TestSettings:
         assert settings.llm_api_key is None
         assert settings.llm_model is None
         assert settings.llm_base_url == config.DEFAULT_LLM_BASE_URL
+        assert settings.extractor_effort == "low"
+        assert settings.auditor_effort == "max"
+        assert settings.extractor_max_tokens == 4000
+        assert settings.auditor_max_tokens == 16000
         assert settings.chunk_max_chars == config.DEFAULT_CHUNK_MAX_CHARS
         assert settings.chunk_overlap_chars == config.DEFAULT_CHUNK_OVERLAP_CHARS
 
@@ -154,3 +162,91 @@ class TestStageModels:
         assert pinned.llm_model == "heavy/model"
         assert pinned.llm_api_key == "key"
         assert settings.llm_model == "legacy/model"
+
+
+class TestReasoningOptions:
+    def test_efforts_are_read_from_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EXTRACTOR_EFFORT", "LOW")
+        monkeypatch.setenv("AUDITOR_EFFORT", "max")
+
+        settings = _load_without_dotenv(tmp_path)
+
+        assert settings.extractor_effort == "low"
+        assert settings.auditor_effort == "max"
+
+    def test_max_tokens_are_read_from_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EXTRACTOR_MAX_TOKENS", "6000")
+        monkeypatch.setenv("AUDITOR_MAX_TOKENS", "20000")
+
+        settings = _load_without_dotenv(tmp_path)
+
+        assert settings.extractor_max_tokens == 6000
+        assert settings.auditor_max_tokens == 20000
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [("EXTRACTOR_EFFORT", "ultra"), ("AUDITOR_EFFORT", "extreme")],
+    )
+    def test_unknown_effort_is_rejected(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+        value: str,
+    ) -> None:
+        monkeypatch.setenv(name, value)
+
+        with pytest.raises(config.SettingsError, match=name):
+            _load_without_dotenv(tmp_path)
+
+    def test_model_specific_effort_is_validated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EXTRACTOR_MODEL", "meta/muse-ember")
+        monkeypatch.setenv("EXTRACTOR_EFFORT", "none")
+
+        with pytest.raises(config.SettingsError, match="does not support"):
+            _load_without_dotenv(tmp_path)
+
+    def test_haiku_minimal_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AUDITOR_MODEL", "anthropic/claude-haiku-5.5")
+        monkeypatch.setenv("AUDITOR_EFFORT", "minimal")
+
+        with pytest.raises(config.SettingsError, match="does not support"):
+            _load_without_dotenv(tmp_path)
+
+    def test_allowed_efforts_are_per_model(self) -> None:
+        assert "minimal" not in config.allowed_efforts("anthropic/claude-haiku-5.5")
+        assert "none" not in config.allowed_efforts("meta/muse-ember")
+        assert "max" in config.allowed_efforts("anthropic/claude-haiku-5.5")
+        assert "max" in config.allowed_efforts("meta/muse-ember")
+
+    def test_extra_body_uses_unified_form_and_hides_trace(self) -> None:
+        assert config.reasoning_extra_body("low") == {
+            "reasoning": {"effort": "low", "exclude": True}
+        }
+        assert config.reasoning_extra_body("max") == {
+            "reasoning": {"effort": "max", "exclude": True}
+        }
+        assert config.reasoning_extra_body(None) is None
+
+    def test_with_model_pins_extra_body_and_max_tokens(self) -> None:
+        settings = config.Settings(llm_model="legacy/model")
+        extra = {"reasoning": {"effort": "max", "exclude": True}}
+
+        pinned = settings.with_model(
+            "heavy/model", extra_body=extra, max_tokens=16000
+        )
+
+        assert pinned.llm_model == "heavy/model"
+        assert pinned.request_extra_body == extra
+        assert pinned.llm_max_tokens == 16000
+        assert settings.llm_model == "legacy/model"
+        assert settings.request_extra_body is None
+        assert settings.llm_max_tokens is None
