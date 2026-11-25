@@ -167,9 +167,35 @@ class LLMFinding(BaseModel):
 
 
 class LLMAnalysisResponse(BaseModel):
-    """Top-level JSON object returned by the analysis prompt."""
+    """Top-level JSON object returned by the legacy single-item prompt."""
 
     findings: list[LLMFinding] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data: object) -> object:
+        if isinstance(data, list):
+            return {"findings": data}
+        return data
+
+
+class LLMBatchFinding(LLMFinding):
+    """A finding bound to a concrete ``REQ-ID`` in a batch answer."""
+
+    requirement_id: str = Field(min_length=1)
+
+    @field_validator("requirement_id", mode="before")
+    @classmethod
+    def _clean_requirement_id(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class LLMBatchAnalysisResponse(BaseModel):
+    """Findings for a whole batch of up to twenty requirements."""
+
+    findings: list[LLMBatchFinding] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -214,11 +240,15 @@ class RequirementAnalysis(BaseModel):
                 if finding.severity in {Severity.HIGH, Severity.CRITICAL}
                 else RequirementStatus.WARNING
             )
+            payload = finding.model_dump()
+            # Batch findings already carry their own id; the owning id is the
+            # one we derive from, so never let the model override it.
+            payload.pop("requirement_id", None)
             built.append(
                 RequirementFinding(
                     requirement_id=requirement_id,
                     status=finding_status,
-                    **finding.model_dump(),
+                    **payload,
                 )
             )
 

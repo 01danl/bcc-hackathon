@@ -1,6 +1,8 @@
 """Pydantic data models for documents, requirements and analyses."""
 
 from app.models.analysis import (
+    LLMBatchAnalysisResponse,
+    LLMBatchFinding,
     LLMAnalysisResponse,
     LLMExtractedRequirement,
     LLMExtractionResponse,
@@ -30,6 +32,8 @@ from app.models.set_audit import (
 
 __all__ = [
     "DocumentFormat",
+    "LLMBatchAnalysisResponse",
+    "LLMBatchFinding",
     "LLMAnalysisResponse",
     "LLMExtractedRequirement",
     "LLMExtractionResponse",

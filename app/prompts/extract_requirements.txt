@@ -57,5 +57,12 @@ comments:
   ]
 }
 
+STRICT OUTPUT RULES
+- Return ONLY the four fields shown above. No extra fields, no wrapper text,
+  no comments, no notes, no quality judgements and no verdict.
+- Do not evaluate, criticize, explain, translate, rewrite or "improve" any
+  requirement. This stage copies text only; the audit happens later.
+- Do not output Markdown fences or any prose before or after the JSON object.
+
 Use the location metadata supplied by the user. Do not guess a page number.
 Return compact, valid JSON only.

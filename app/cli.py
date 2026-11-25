@@ -145,7 +145,7 @@ def analyze(
 
     typer.secho(
         f"Извлечено требований: {len(collection)}. "
-        f"Анализ каждого требования ({settings.auditor_model})...",
+        f"Пакетный аудит требований ({settings.auditor_model})...",
         bold=True,
     )
     try:

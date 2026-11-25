@@ -16,10 +16,10 @@ from app.cli import app, get_git_commit
 from app.config import Settings
 from app.llm.client import LLMRequestError
 from app.models.analysis import (
-    LLMAnalysisResponse,
+    LLMBatchAnalysisResponse,
+    LLMBatchFinding,
     LLMExtractionResponse,
     LLMExtractedRequirement,
-    LLMFinding,
     QualityCriterion,
     RequirementAnalysis,
     RequirementAnalysisCollection,
@@ -518,7 +518,7 @@ class TestCliPipeline:
         stages = Counter(call.__name__ for call in client.calls)
         assert stages == {
             "LLMExtractionResponse": 1,
-            "LLMAnalysisResponse": 2,
+            "LLMBatchAnalysisResponse": 1,
             "LLMSetAuditResponse": 1,
         }
         report = output_path.read_text(encoding="utf-8")
@@ -553,16 +553,25 @@ class _ScriptedClient:
         self.calls.append(response_model)
         if response_model is LLMExtractionResponse:
             return _extract_list_items(user_prompt)
-        if response_model is LLMAnalysisResponse:
-            return LLMAnalysisResponse(
+        if response_model is LLMBatchAnalysisResponse:
+            return LLMBatchAnalysisResponse(
                 findings=[
-                    LLMFinding(
+                    LLMBatchFinding(
+                        requirement_id="REQ-001",
+                        severity=Severity.MEDIUM,
+                        criterion=QualityCriterion.VERIFIABILITY,
+                        explanation="Не указан наблюдаемый результат.",
+                        evidence="Система должна отправлять push.",
+                        recommendation="Добавить наблюдаемый результат.",
+                    ),
+                    LLMBatchFinding(
+                        requirement_id="REQ-002",
                         severity=Severity.MEDIUM,
                         criterion=QualityCriterion.VERIFIABILITY,
                         explanation="Не указан наблюдаемый результат.",
                         evidence="Порог задаётся в тенге.",
                         recommendation="Добавить наблюдаемый результат.",
-                    )
+                    ),
                 ]
             )
         if response_model is LLMSetAuditResponse:

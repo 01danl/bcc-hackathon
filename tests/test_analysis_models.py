@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.analysis import (
+    LLMBatchAnalysisResponse,
+    LLMBatchFinding,
     LLMAnalysisResponse,
     LLMExtractionResponse,
     LLMFinding,
@@ -129,6 +131,48 @@ class TestFindingValidation:
         )
 
         assert len(response.findings) == 1
+
+
+class TestBatchFindingValidation:
+    def test_requirement_id_is_required(self) -> None:
+        with pytest.raises(ValidationError):
+            LLMBatchFinding(
+                severity="HIGH",
+                criterion="clarity",
+                explanation="Проблема.",
+                evidence="Текст.",
+                recommendation="Исправить.",
+            )
+
+    def test_batch_response_accepts_bare_list(self) -> None:
+        response = LLMBatchAnalysisResponse.model_validate(
+            [
+                {
+                    "requirement_id": "REQ-001",
+                    "severity": "LOW",
+                    "criterion": "clarity",
+                    "explanation": "Проблема.",
+                    "evidence": "Текст.",
+                    "recommendation": "Исправить.",
+                }
+            ]
+        )
+
+        assert response.findings[0].requirement_id == "REQ-001"
+
+    def test_requirement_id_is_stripped(self) -> None:
+        finding = LLMBatchFinding.model_validate(
+            {
+                "requirement_id": "  REQ-007  ",
+                "severity": "MEDIUM",
+                "criterion": "clarity",
+                "explanation": "Проблема.",
+                "evidence": "Текст.",
+                "recommendation": "Исправить.",
+            }
+        )
+
+        assert finding.requirement_id == "REQ-007"
 
 
 class TestStatusDerivation:
