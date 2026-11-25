@@ -8,7 +8,7 @@ extraction/analysis pipeline and are validated when the client is built.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,6 +29,11 @@ class SettingsError(ValueError):
 class Settings:
     """Immutable runtime settings for a single pipeline run.
 
+    Each pipeline stage uses its own model: ``extractor_model`` extracts
+    the requirements and ``auditor_model`` checks each requirement and the
+    whole set. A stage without a model of its own falls back to
+    ``llm_model``, the single-model setting.
+
     ``llm_api_key`` is excluded from the dataclass ``repr`` so that a
     settings object can be logged safely.
     """
@@ -38,10 +43,23 @@ class Settings:
     llm_api_key: str | None = field(default=None, repr=False)
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_model: str | None = None
+    extractor_model: str | None = None
+    auditor_model: str | None = None
     llm_timeout: float = DEFAULT_LLM_TIMEOUT
     llm_max_retries: int = DEFAULT_LLM_MAX_RETRIES
     chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS
     chunk_overlap_chars: int = DEFAULT_CHUNK_OVERLAP_CHARS
+
+    def __post_init__(self) -> None:
+        """Fall back to ``llm_model`` for stages without their own model."""
+        if not self.extractor_model:
+            object.__setattr__(self, "extractor_model", self.llm_model)
+        if not self.auditor_model:
+            object.__setattr__(self, "auditor_model", self.llm_model)
+
+    def with_model(self, model: str | None) -> Settings:
+        """Return a copy pinned to ``model``, e.g. to build a stage's LLM client."""
+        return replace(self, llm_model=model)
 
 
 def load_settings(env_file: str | Path | None = None) -> Settings:
@@ -74,6 +92,8 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         llm_api_key=_read_text("LLM_API_KEY"),
         llm_base_url=_read_text("LLM_BASE_URL") or DEFAULT_LLM_BASE_URL,
         llm_model=_read_text("LLM_MODEL"),
+        extractor_model=_read_text("EXTRACTOR_MODEL"),
+        auditor_model=_read_text("AUDITOR_MODEL"),
         llm_timeout=timeout,
         llm_max_retries=retries,
         chunk_max_chars=max_chars,
