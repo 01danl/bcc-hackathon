@@ -66,3 +66,7 @@ reports/*
 
 # Document handed out by hackathon organizers (submitted separately, per the task rules)
 documents_organization/requirements.md
+
+# Archify diagram artifacts (local, regenerable)
+.archify/
+project-pipeline*
