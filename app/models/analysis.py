@@ -9,6 +9,7 @@ Two layers of models are used deliberately:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -42,6 +43,13 @@ class QualityCriterion(str, Enum):
     CONSISTENCY = "consistency"
     NECESSITY = "necessity"
     FEASIBILITY = "feasibility"
+
+
+class FindingOrigin(str, Enum):
+    """Where a finding came from: the auditor model or the static linter."""
+
+    LLM = "llm"
+    STATIC_LINTER = "static_linter"
 
 
 _CATEGORY_ALIASES = {
@@ -130,21 +138,32 @@ class LLMExtractionResponse(BaseModel):
         return data
 
 
-class LLMFinding(BaseModel):
-    """One defect returned by the analysis prompt."""
+def _as_string_list(value: object) -> object:
+    """Coerce ``None`` or a bare string into a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if isinstance(value, list):
+        return [
+            item.strip() for item in value if isinstance(item, str) and item.strip()
+        ]
+    return value
 
-    severity: Severity
-    criterion: QualityCriterion
-    explanation: str = Field(min_length=1)
-    evidence: str = Field(min_length=1, description="Exact fragment from the source")
-    recommendation: str = Field(min_length=1)
 
-    @field_validator("severity", mode="before")
+class _FindingValidators(BaseModel):
+    """Shared validators for model-returned findings.
+
+    The base model has no fields of its own; ``check_fields=False`` lets the
+    same validators serve both requirement-level and batch-level models.
+    """
+
+    @field_validator("severity", mode="before", check_fields=False)
     @classmethod
     def _normalize_severity(cls, value: object) -> object:
         return normalize_severity(value)
 
-    @field_validator("criterion", mode="before")
+    @field_validator("criterion", mode="before", check_fields=False)
     @classmethod
     def _normalize_criterion(cls, value: object) -> object:
         if isinstance(value, QualityCriterion):
@@ -158,12 +177,29 @@ class LLMFinding(BaseModel):
             "consistency, necessity, feasibility"
         )
 
-    @field_validator("explanation", "evidence", "recommendation", mode="before")
+    @field_validator("explanation", "evidence", "recommendation", mode="before", check_fields=False)
     @classmethod
     def _clean_strings(cls, value: object) -> object:
         if isinstance(value, str):
             return value.strip()
         return value
+
+
+class LLMFinding(_FindingValidators):
+    """One defect returned by the analysis prompt.
+
+    Fields are ordered causally: quote first, then the conflict analysis,
+    then the criterion and only then severity. Models generate JSON left to
+    right, so they reason before judging instead of guessing a severity and
+    justifying it afterwards.
+    """
+
+    evidence: str = Field(min_length=1, description="Exact fragment from the source")
+    explanation: str = Field(min_length=1)
+    criterion: QualityCriterion
+    severity: Severity
+    recommendation: str = Field(min_length=1)
+    origin: FindingOrigin = FindingOrigin.LLM
 
 
 class LLMAnalysisResponse(BaseModel):
@@ -179,10 +215,16 @@ class LLMAnalysisResponse(BaseModel):
         return data
 
 
-class LLMBatchFinding(LLMFinding):
+class LLMBatchFinding(_FindingValidators):
     """A finding bound to a concrete ``REQ-ID`` in a batch answer."""
 
     requirement_id: str = Field(min_length=1)
+    evidence: str = Field(min_length=1, description="Exact fragment from the source")
+    explanation: str = Field(min_length=1)
+    criterion: QualityCriterion
+    severity: Severity
+    recommendation: str = Field(min_length=1)
+    origin: FindingOrigin = FindingOrigin.LLM
 
     @field_validator("requirement_id", mode="before")
     @classmethod
@@ -196,6 +238,10 @@ class LLMBatchAnalysisResponse(BaseModel):
     """Findings for a whole batch of up to twenty requirements."""
 
     findings: list[LLMBatchFinding] = Field(default_factory=list)
+    rejected_flag_ids: list[str] = Field(
+        default_factory=list,
+        description="Pre-detected lint flags the model judged to be false positives",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -204,17 +250,23 @@ class LLMBatchAnalysisResponse(BaseModel):
             return {"findings": data}
         return data
 
+    @field_validator("rejected_flag_ids", mode="before")
+    @classmethod
+    def _as_string_list(cls, value: object) -> object:
+        return _as_string_list(value)
+
 
 class RequirementFinding(BaseModel):
     """A validated finding with the requirement id attached."""
 
     requirement_id: str = Field(min_length=1)
-    status: RequirementStatus
-    severity: Severity
-    criterion: QualityCriterion
-    explanation: str = Field(min_length=1)
     evidence: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    criterion: QualityCriterion
+    severity: Severity
     recommendation: str = Field(min_length=1)
+    status: RequirementStatus
+    origin: FindingOrigin = FindingOrigin.LLM
 
 
 class RequirementAnalysis(BaseModel):
@@ -231,7 +283,9 @@ class RequirementAnalysis(BaseModel):
 
     @classmethod
     def from_findings(
-        cls, requirement_id: str, findings: list[LLMFinding]
+        cls,
+        requirement_id: str,
+        findings: Sequence[LLMFinding | LLMBatchFinding],
     ) -> RequirementAnalysis:
         built: list[RequirementFinding] = []
         for finding in findings:
@@ -272,6 +326,30 @@ class RequirementAnalysisCollection(BaseModel):
     """All per-requirement analyses for one document."""
 
     analyses: list[RequirementAnalysis] = Field(default_factory=list)
+    excluded_findings: int = Field(
+        default=0,
+        description="Findings dropped because their quote or requirement id was invalid",
+    )
+    skipped_requirements: int = Field(
+        default=0,
+        description="Requirements not deep-audited because triage marked them as low risk",
+    )
+    deep_audited_requirements: int = Field(
+        default=0,
+        description="Requirements sent to the auditor model",
+    )
+    static_findings: int = Field(
+        default=0,
+        description="Findings added from the deterministic static linter",
+    )
+    triage_summary: str = Field(
+        default="",
+        description="Short human-readable summary returned by the triage stage",
+    )
+    triage_fallback_used: bool = Field(
+        default=False,
+        description="Triage failed and every requirement was audited",
+    )
 
     def by_status(self) -> dict[RequirementStatus, int]:
         """Count requirements by overall status."""

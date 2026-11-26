@@ -8,18 +8,21 @@ import pytest
 
 from app.llm.client import LLMResponseError
 from app.models.analysis import (
+    FindingOrigin,
     LLMBatchAnalysisResponse,
     LLMBatchFinding,
     QualityCriterion,
     RequirementStatus,
     Severity,
 )
+from app.models.lint import LintCategory, LintFlag
 from app.models.requirement import (
     Requirement,
     RequirementCollection,
     SourceLocation,
 )
 from app.services.requirement_analyzer import RequirementAnalyzer
+from app.services.requirement_triage import TriageResult
 
 
 class FakeClient:
@@ -199,8 +202,12 @@ class TestBatchRequirementAnalyzer:
 
         assert len(analyses.analyses) == 25
         assert len(client.calls) == 2
-        assert progress[0] == (1, 25, "REQ-001")
-        assert progress[-1] == (25, 25, "REQ-025")
+        assert progress[0][0] == 1
+        assert progress[-1][0] == 25
+        assert progress[-1][1] == 25
+        assert {item[2] for item in progress} == {
+            f"REQ-{number:03d}" for number in range(1, 26)
+        }
         assert all(
             analysis.status is RequirementStatus.PASS
             for analysis in analyses.analyses
@@ -218,3 +225,154 @@ class TestBatchRequirementAnalyzer:
         assert analysis.requirement_id == "REQ-001"
         assert analysis.status is RequirementStatus.PASS
         assert len(client.calls) == 1
+
+    def test_fuzzy_evidence_is_canonicalized_without_a_retry(self) -> None:
+        collection = RequirementCollection(
+            requirements=[
+                Requirement(
+                    id="REQ-001",
+                    text="Система должна отправлять push-уведомление.",
+                )
+            ]
+        )
+        finding = _finding(
+            "REQ-001",
+            evidence="Система должна отправлять push уведомление.",
+        )
+        client = FakeClient([LLMBatchAnalysisResponse(findings=[finding])])
+        analyzer = RequirementAnalyzer(client)  # type: ignore[arg-type]
+
+        analyses = analyzer.analyze_all(
+            collection,
+            document_text="* **Ф-1.** Система должна отправлять push-уведомление.",
+        )
+
+        assert len(client.calls) == 1
+        assert analyses.analyses[0].findings[0].evidence == (
+            "Система должна отправлять push-уведомление."
+        )
+
+    def test_lint_flags_are_merged_when_the_model_omits_them(self) -> None:
+        collection = _collection()
+        flag = _flag("LINT-001", "REQ-001", "Система должна работать быстро.")
+        client = FakeClient([LLMBatchAnalysisResponse(findings=[])])
+        analyzer = RequirementAnalyzer(client)  # type: ignore[arg-type]
+
+        analyses = analyzer.analyze_all(
+            collection,
+            document_text=_corpus(collection),
+            pre_detected_flags=[flag],
+        )
+
+        assert analyses.analyses[0].status is RequirementStatus.FAIL
+        assert analyses.analyses[0].findings[0].origin is FindingOrigin.STATIC_LINTER
+        assert analyses.static_findings == 1
+
+    def test_rejected_lint_flag_is_not_merged(self) -> None:
+        collection = _collection()
+        flag = _flag("LINT-001", "REQ-001", "Система должна работать быстро.")
+        client = FakeClient(
+            [
+                LLMBatchAnalysisResponse(
+                    findings=[], rejected_flag_ids=["LINT-001"]
+                )
+            ]
+        )
+        analyzer = RequirementAnalyzer(client)  # type: ignore[arg-type]
+
+        analyses = analyzer.analyze_all(
+            collection,
+            document_text=_corpus(collection),
+            pre_detected_flags=[flag],
+        )
+
+        assert analyses.analyses[0].findings == []
+        assert analyses.static_findings == 0
+
+    def test_triage_limits_the_deep_audit_to_suspicious_requirements(self) -> None:
+        collection = _collection()
+        client = FakeClient([LLMBatchAnalysisResponse(findings=[])])
+        triage = StubTriage({"REQ-002"})
+        analyzer = RequirementAnalyzer(client, triage=triage)  # type: ignore[arg-type]
+
+        analyses = analyzer.analyze_all(
+            collection, document_text=_corpus(collection)
+        )
+
+        assert len(client.calls) == 1
+        prompt = client.calls[0]["user_prompt"]
+        assert '"id": "REQ-002"' in prompt
+        assert '"id": "REQ-001"' not in prompt
+        assert analyses.deep_audited_requirements == 1
+        assert analyses.skipped_requirements == 1
+        assert analyses.triage_summary == "Проверено triage."
+
+    def test_lint_flag_forces_an_audit_even_when_triage_skips_it(self) -> None:
+        collection = _collection()
+        flag = _flag("LINT-001", "REQ-001", "Система должна работать быстро.")
+        client = FakeClient([LLMBatchAnalysisResponse(findings=[])])
+        analyzer = RequirementAnalyzer(client, triage=StubTriage(set()))  # type: ignore[arg-type]
+
+        analyses = analyzer.analyze_all(
+            collection,
+            document_text=_corpus(collection),
+            pre_detected_flags=[flag],
+        )
+
+        assert len(client.calls) == 1
+        assert "REQ-001" in client.calls[0]["user_prompt"]
+        assert analyses.deep_audited_requirements == 1
+        assert analyses.skipped_requirements == 1
+        assert analyses.analyses[0].findings[0].origin is FindingOrigin.STATIC_LINTER
+
+    def test_document_prefix_is_stable_across_batches(self) -> None:
+        collection = _collection(25)
+        client = FakeClient(
+            [
+                LLMBatchAnalysisResponse(findings=[]),
+                LLMBatchAnalysisResponse(findings=[]),
+            ]
+        )
+        analyzer = RequirementAnalyzer(client)  # type: ignore[arg-type]
+
+        analyzer.analyze_all(collection, document_text=_corpus(collection))
+
+        first, second = client.calls
+        assert first["system_prompt"] == second["system_prompt"]
+        assert _corpus(collection) in first["system_prompt"]
+        assert _corpus(collection) not in first["user_prompt"]
+        assert first["user_prompt"].rstrip().endswith(
+            "only findings bound to requirement IDs and rejected lint flag IDs."
+        )
+
+
+class StubTriage:
+    def __init__(self, suspicious_ids: set[str]) -> None:
+        self._suspicious_ids = frozenset(suspicious_ids)
+
+    def triage(
+        self,
+        collection: RequirementCollection,
+        *,
+        document_text: str | None = None,
+        pre_detected_flags: Any = (),
+    ) -> TriageResult:
+        return TriageResult(
+            suspicious_ids=self._suspicious_ids,
+            reasons={item: "Причина." for item in self._suspicious_ids},
+            summary="Проверено triage.",
+            triaged_requirements=len(collection),
+        )
+
+
+def _flag(flag_id: str, requirement_id: str, evidence: str) -> LintFlag:
+    return LintFlag(
+        flag_id=flag_id,
+        category=LintCategory.VAGUE_WORDING,
+        severity=Severity.HIGH,
+        criterion=QualityCriterion.VERIFIABILITY,
+        message="Нечёткая скорость без измеримого предела.",
+        evidence=evidence,
+        recommendation="Указать время отклика.",
+        requirement_id=requirement_id,
+    )

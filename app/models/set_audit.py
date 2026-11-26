@@ -13,7 +13,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.analysis import Severity, normalize_severity
+from app.models.analysis import FindingOrigin, Severity, normalize_severity
 
 
 def _string_list(value: object) -> object:
@@ -42,6 +42,7 @@ class SetFindingCategory(str, Enum):
     MISSING_REQUIREMENT = "missing_requirement"
     INCOMPLETE_SECTION = "incomplete_section"
     GOAL_COVERAGE = "goal_coverage"
+    AMBIGUOUS_REQUIREMENT = "ambiguous_requirement"
 
 
 class VerdictStatus(str, Enum):
@@ -53,17 +54,23 @@ class VerdictStatus(str, Enum):
 
 
 class SetFinding(BaseModel):
-    """One defect returned by the set audit prompt."""
+    """One defect returned by the set audit prompt.
 
-    category: SetFindingCategory
-    severity: Severity
-    title: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    related_req_ids: list[str] = Field(default_factory=list)
+    As with per-requirement findings, the fields follow the causal order
+    quote -> analysis -> category -> severity so the model reasons before
+    assigning a severity.
+    """
+
     evidence: list[str] = Field(
         default_factory=list,
         description="Verbatim quotes from the source document",
     )
+    description: str = Field(min_length=1)
+    category: SetFindingCategory
+    severity: Severity
+    title: str = Field(min_length=1)
+    related_req_ids: list[str] = Field(default_factory=list)
+    origin: FindingOrigin = FindingOrigin.LLM
 
     @field_validator("category", mode="before")
     @classmethod
@@ -76,7 +83,8 @@ class SetFinding(BaseModel):
                 return SetFindingCategory(normalized)
         raise ValueError(
             "category must be one of: integration_mismatch, contradiction, "
-            "duplicate, missing_requirement, incomplete_section, goal_coverage"
+            "duplicate, missing_requirement, incomplete_section, goal_coverage, "
+            "ambiguous_requirement"
         )
 
     @field_validator("severity", mode="before")
@@ -107,9 +115,13 @@ class SetFinding(BaseModel):
 class LLMSetAuditResponse(BaseModel):
     """Top-level JSON object returned by the set audit prompt."""
 
+    findings: list[SetFinding] = Field(default_factory=list)
+    rejected_flag_ids: list[str] = Field(
+        default_factory=list,
+        description="Pre-detected lint flags the model judged to be false positives",
+    )
     summary: str
     goal_coverage: str
-    findings: list[SetFinding] = Field(default_factory=list)
     priority_actions: list[str] = Field(default_factory=list)
 
     @field_validator("summary", "goal_coverage", mode="before")
@@ -119,7 +131,7 @@ class LLMSetAuditResponse(BaseModel):
             return value.strip()
         return value
 
-    @field_validator("priority_actions", mode="before")
+    @field_validator("priority_actions", "rejected_flag_ids", mode="before")
     @classmethod
     def _as_string_list(cls, value: object) -> object:
         return _string_list(value)
@@ -136,4 +148,8 @@ class RequirementSetAudit(LLMSetAuditResponse):
             "Findings dropped because none of their quotes "
             "were found in the document"
         ),
+    )
+    static_findings: int = Field(
+        default=0,
+        description="Set-level findings added from the deterministic linter",
     )

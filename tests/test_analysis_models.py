@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.analysis import (
+    FindingOrigin,
     LLMBatchAnalysisResponse,
     LLMBatchFinding,
     LLMAnalysisResponse,
@@ -14,6 +15,7 @@ from app.models.analysis import (
     RequirementStatus,
     Severity,
 )
+from app.models.set_audit import SetFinding, SetFindingCategory
 
 
 def _finding(
@@ -173,6 +175,65 @@ class TestBatchFindingValidation:
         )
 
         assert finding.requirement_id == "REQ-007"
+
+
+class TestCausalFieldOrder:
+    def test_batch_finding_starts_with_evidence_and_ends_with_severity(self) -> None:
+        fields = list(LLMBatchFinding.model_fields)
+
+        assert fields == [
+            "requirement_id",
+            "evidence",
+            "explanation",
+            "criterion",
+            "severity",
+            "recommendation",
+            "origin",
+        ]
+        assert fields.index("evidence") < fields.index("explanation")
+        assert fields.index("explanation") < fields.index("criterion")
+        assert fields.index("criterion") < fields.index("severity")
+
+    def test_set_finding_starts_with_evidence(self) -> None:
+        fields = list(SetFinding.model_fields)
+
+        assert fields[:4] == ["evidence", "description", "category", "severity"]
+        assert fields.index("evidence") < fields.index("severity")
+
+
+class TestRejectedFlags:
+    def test_bare_string_is_accepted(self) -> None:
+        response = LLMBatchAnalysisResponse.model_validate(
+            {"findings": [], "rejected_flag_ids": "LINT-001"}
+        )
+
+        assert response.rejected_flag_ids == ["LINT-001"]
+
+    def test_static_origin_is_preserved(self) -> None:
+        finding = LLMBatchFinding(
+            requirement_id="REQ-001",
+            evidence="Текст.",
+            explanation="Проблема.",
+            criterion=QualityCriterion.CLARITY,
+            severity=Severity.MEDIUM,
+            recommendation="Исправить.",
+            origin=FindingOrigin.STATIC_LINTER,
+        )
+
+        analysis = RequirementAnalysis.from_findings("REQ-001", [finding])
+
+        assert analysis.findings[0].origin is FindingOrigin.STATIC_LINTER
+
+    def test_set_category_accepts_ambiguous_requirement(self) -> None:
+        finding = SetFinding(
+            evidence=["Текст."],
+            description="Описание.",
+            category="ambiguous-requirement",
+            severity="MEDIUM",
+            title="Заголовок",
+        )
+
+        assert finding.category is SetFindingCategory.AMBIGUOUS_REQUIREMENT
 
 
 class TestStatusDerivation:

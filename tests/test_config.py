@@ -42,7 +42,7 @@ class TestSettings:
         assert settings.llm_model is None
         assert settings.llm_base_url == config.DEFAULT_LLM_BASE_URL
         assert settings.extractor_effort == "low"
-        assert settings.auditor_effort == "max"
+        assert settings.auditor_effort == "medium"
         assert settings.extractor_max_tokens == 4000
         assert settings.auditor_max_tokens == 16000
         assert settings.chunk_max_chars == config.DEFAULT_CHUNK_MAX_CHARS

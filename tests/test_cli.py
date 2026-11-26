@@ -40,6 +40,7 @@ from app.models.set_audit import (
     SetFindingCategory,
     VerdictStatus,
 )
+from app.models.triage import LLMTriageItem, LLMTriageResponse, TriageRisk
 
 
 def _settings() -> Settings:
@@ -79,7 +80,7 @@ def _set_audit(**overrides: Any) -> RequirementSetAudit:
 
 def _stub_extractor() -> type:
     class StubExtractor:
-        def __init__(self, *args: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
         def extract(self, document: SourceDocument) -> RequirementCollection:
@@ -93,7 +94,7 @@ def _stub_extractor() -> type:
 
 def _stub_analyzer() -> type:
     class StubAnalyzer:
-        def __init__(self, *args: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
         def analyze_all(self, *args: Any, **kwargs: Any) -> RequirementAnalysisCollection:
@@ -115,7 +116,7 @@ def _stub_set_analyzer(
     """Build a set analyzer stub returning ``audit`` and recording its inputs."""
 
     class StubSetAnalyzer:
-        def __init__(self, *args: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
         def analyze(
@@ -123,9 +124,10 @@ def _stub_set_analyzer(
             document_text: str,
             collection: RequirementCollection,
             analyses: Any,
+            **kwargs: Any,
         ) -> RequirementSetAudit:
             if calls is not None:
-                calls.append((document_text, collection, analyses))
+                calls.append((document_text, collection, analyses, kwargs))
             return audit
 
     return StubSetAnalyzer
@@ -133,10 +135,10 @@ def _stub_set_analyzer(
 
 def _failing_set_analyzer() -> type:
     class FailingSetAnalyzer:
-        def __init__(self, *args: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def analyze(self, *args: Any) -> None:
+        def analyze(self, *args: Any, **kwargs: Any) -> None:
             raise LLMRequestError("set audit provider is down")
 
     return FailingSetAnalyzer
@@ -187,7 +189,7 @@ class TestCliConfiguration:
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         class StubExtractor:
-            def __init__(self, *args: Any) -> None:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
                 pass
 
             def extract(self, document: SourceDocument) -> RequirementCollection:
@@ -197,7 +199,7 @@ class TestCliConfiguration:
                 return []
 
         class StubAnalyzer:
-            def __init__(self, *args: Any) -> None:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
                 pass
 
             def analyze_all(self, *args: Any, **kwargs: Any) -> RequirementAnalysisCollection:
@@ -239,7 +241,7 @@ class TestCliFailureHandling:
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         class FailingExtractor:
-            def __init__(self, *args: Any) -> None:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
                 pass
 
             def extract(self, document: SourceDocument) -> RequirementCollection:
@@ -264,7 +266,7 @@ class TestCliFailureHandling:
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         class StubExtractor:
-            def __init__(self, *args: Any) -> None:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
                 pass
 
             def extract(self, document: SourceDocument) -> RequirementCollection:
@@ -274,7 +276,7 @@ class TestCliFailureHandling:
                 return []
 
         class FailingAnalyzer:
-            def __init__(self, *args: Any) -> None:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
                 pass
 
             def analyze_all(self, *args: Any, **kwargs: Any) -> None:
@@ -348,7 +350,7 @@ class TestCliSetAudit:
         assert "Ограничения текущего этапа" not in report
 
         # The stage sees the full document, the requirements and their analyses.
-        document_text, collection, analyses = calls[0]
+        document_text, collection, analyses, kwargs = calls[0]
         assert "Ф-1. Система должна отправлять push." in document_text
         assert isinstance(collection, RequirementCollection)
         assert [item.id for item in collection.requirements] == ["REQ-001"]
@@ -518,12 +520,15 @@ class TestCliPipeline:
         stages = Counter(call.__name__ for call in client.calls)
         assert stages == {
             "LLMExtractionResponse": 1,
+            "LLMTriageResponse": 1,
             "LLMBatchAnalysisResponse": 1,
             "LLMSetAuditResponse": 1,
         }
         report = output_path.read_text(encoding="utf-8")
         assert "**Вердикт: BLOCKED.**" in report
+        assert "## Статический линтер" in report
         assert "заполняются тестировщиками" in report
+        assert "Флагов линтера: 1" in result.output
         extraction = json.loads(
             (tmp_path / "report.requirements.json").read_text(encoding="utf-8")
         )
@@ -535,7 +540,11 @@ class TestCliPipeline:
             (tmp_path / "report.analysis.json").read_text(encoding="utf-8")
         )
         assert analysis["summary"]["status"]["WARNING"] == 2
+        assert analysis["summary"]["deep_audited_requirements"] == 2
+        assert analysis["summary"]["skipped_requirements"] == 0
+        assert analysis["lint"]["document_flags"][0]["category"] == "stub_text"
         assert analysis["set_audit"]["verdict"] == "BLOCKED"
+        assert len(analysis["set_audit"]["findings"]) == 1
         assert analysis["set_audit"]["findings"][0]["evidence"] == [
             "заполняются тестировщиками"
         ]
@@ -553,6 +562,22 @@ class _ScriptedClient:
         self.calls.append(response_model)
         if response_model is LLMExtractionResponse:
             return _extract_list_items(user_prompt)
+        if response_model is LLMTriageResponse:
+            return LLMTriageResponse(
+                suspicious=[
+                    LLMTriageItem(
+                        requirement_id="REQ-001",
+                        reason="Нужен глубокий аудит.",
+                        risk=TriageRisk.MEDIUM,
+                    ),
+                    LLMTriageItem(
+                        requirement_id="REQ-002",
+                        reason="Нужен глубокий аудит.",
+                        risk=TriageRisk.MEDIUM,
+                    ),
+                ],
+                summary="Оба требования стоит проверить.",
+            )
         if response_model is LLMBatchAnalysisResponse:
             return LLMBatchAnalysisResponse(
                 findings=[

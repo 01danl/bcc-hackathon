@@ -1,6 +1,11 @@
 """Unit tests for evidence verification against a source document."""
 
-from app.services.evidence import find_missing_quotes, normalize_for_matching
+from app.services.evidence import (
+    align_quote,
+    canonicalize_quotes,
+    find_missing_quotes,
+    normalize_for_matching,
+)
 
 
 class TestNormalizeForMatching:
@@ -46,3 +51,53 @@ class TestFindMissingQuotes:
     def test_word_boundaries_are_not_required(self) -> None:
         # Matching is a plain substring search: a mid-word slice is found too.
         assert find_missing_quotes(["ЖАТЕЛЬ зад"], self.SOURCE) == []
+
+
+class TestFuzzyAlignment:
+    SOURCE = (
+        "* **Ф-1.** Держатель активной карты KZT задаёт целый порог "
+        "от 1 000 до 1 000 000 ₸ включительно."
+    )
+
+    def test_one_letter_difference_returns_the_source_slice(self) -> None:
+        quote = (
+            "Держатель активной карты KZT задает целый порог "
+            "от 1 000 до 1 000 000 ₸"
+        )
+
+        match = align_quote(quote, self.SOURCE)
+
+        assert match is not None
+        assert match.score >= 0.92
+        assert match.matched_text == (
+            "Держатель активной карты KZT задаёт целый порог "
+            "от 1 000 до 1 000 000 ₸"
+        )
+        assert "**" not in match.matched_text
+
+    def test_changed_amount_is_rejected(self) -> None:
+        quote = (
+            "Держатель активной карты KZT задаёт целый порог "
+            "от 1 000 до 2 000 000 ₸"
+        )
+
+        assert align_quote(quote, self.SOURCE) is None
+
+    def test_changed_endpoint_is_rejected(self) -> None:
+        source = "Сервис сохраняет порог через /alerts/saveLimit."
+        quote = "Сервис сохраняет порог через /alerts/deleteLimit."
+
+        assert align_quote(quote, source) is None
+
+    def test_canonicalize_returns_unique_source_slices(self) -> None:
+        quotes = [
+            "Держатель активной карты KZT задает целый порог",
+            "Держатель активной карты KZT задаёт целый порог",
+            "этой фразы нет",
+        ]
+
+        aligned, missing = canonicalize_quotes(quotes, self.SOURCE)
+
+        assert len(aligned) == 1
+        assert aligned[0].startswith("Держатель активной карты KZT задаёт")
+        assert missing == ["этой фразы нет"]

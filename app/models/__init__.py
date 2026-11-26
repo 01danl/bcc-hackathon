@@ -1,6 +1,7 @@
 """Pydantic data models for documents, requirements and analyses."""
 
 from app.models.analysis import (
+    FindingOrigin,
     LLMBatchAnalysisResponse,
     LLMBatchFinding,
     LLMAnalysisResponse,
@@ -14,6 +15,7 @@ from app.models.analysis import (
     RequirementStatus,
     Severity,
 )
+from app.models.lint import LintCategory, LintFlag, LintResult
 from app.models.requirement import (
     DocumentFormat,
     Requirement,
@@ -29,9 +31,14 @@ from app.models.set_audit import (
     SetFindingCategory,
     VerdictStatus,
 )
+from app.models.triage import LLMTriageItem, LLMTriageResponse, TriageRisk
 
 __all__ = [
     "DocumentFormat",
+    "FindingOrigin",
+    "LintCategory",
+    "LintFlag",
+    "LintResult",
     "LLMBatchAnalysisResponse",
     "LLMBatchFinding",
     "LLMAnalysisResponse",
@@ -39,6 +46,8 @@ __all__ = [
     "LLMExtractionResponse",
     "LLMFinding",
     "LLMSetAuditResponse",
+    "LLMTriageItem",
+    "LLMTriageResponse",
     "QualityCriterion",
     "Requirement",
     "RequirementAnalysis",
@@ -53,5 +62,6 @@ __all__ = [
     "Severity",
     "SourceDocument",
     "SourceLocation",
+    "TriageRisk",
     "VerdictStatus",
 ]

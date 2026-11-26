@@ -8,10 +8,13 @@ import pytest
 
 from app.llm.client import LLMResponseError
 from app.models.analysis import (
+    FindingOrigin,
+    QualityCriterion,
     RequirementAnalysis,
     RequirementStatus,
     Severity,
 )
+from app.models.lint import LintCategory, LintFlag
 from app.models.requirement import Requirement, RequirementCollection
 from app.models.set_audit import (
     LLMSetAuditResponse,
@@ -25,7 +28,9 @@ DOCUMENT = (
     "# ТЗ\n\n"
     "## Функциональные требования\n\n"
     "* **Ф-1.** Система отправляет push при достижении порога.\n"
-    "* **Ф-2.** Переводы и снятие наличных не учитываются.\n"
+    "* **Ф-2.** Переводы и снятие наличных не учитываются.\n\n"
+    "## Тестирование\n\n"
+    "заполняются тестировщиками\n"
 )
 
 
@@ -88,9 +93,25 @@ def _response(findings: list[SetFinding] | None = None) -> LLMSetAuditResponse:
     )
 
 
-def _analyze(client: FakeClient, analyses: list[RequirementAnalysis]) -> Any:
+def _analyze(
+    client: FakeClient,
+    analyses: list[RequirementAnalysis],
+    flags: list[LintFlag] | None = None,
+) -> Any:
     return RequirementSetAnalyzer(client).analyze(  # type: ignore[arg-type]
-        DOCUMENT, _collection(), analyses
+        DOCUMENT, _collection(), analyses, pre_detected_flags=flags or []
+    )
+
+
+def _lint_flag() -> LintFlag:
+    return LintFlag(
+        flag_id="LINT-001",
+        category=LintCategory.STUB_TEXT,
+        severity=Severity.HIGH,
+        criterion=QualityCriterion.COMPLETENESS,
+        message="Незаполненная заглушка вместо сценариев.",
+        evidence="заполняются тестировщиками",
+        recommendation="Заполнить раздел.",
     )
 
 
@@ -188,6 +209,19 @@ class TestEvidenceVerification:
         assert audit.verdict is VerdictStatus.NEEDS_REVISION
         assert "исключена" in audit.verdict_reason
 
+    def test_fuzzy_quote_is_canonicalized_without_a_retry(self) -> None:
+        fuzzy = _finding(
+            evidence=["Система отправляэт push при достижении порога."]
+        )
+        client = FakeClient([_response([fuzzy])])
+
+        audit = _analyze(client, [])
+
+        assert len(client.calls) == 1
+        assert audit.findings[0].evidence == [
+            "Система отправляет push при достижении порога."
+        ]
+
     def test_verified_quotes_are_kept_and_unverified_dropped(self) -> None:
         mixed = _finding(
             evidence=[
@@ -216,6 +250,61 @@ class TestRelatedIds:
         assert audit.findings[0].related_req_ids == ["REQ-001", "REQ-002"]
 
 
+class TestLinterMerge:
+    def test_document_flag_is_kept_when_the_model_omits_it(self) -> None:
+        client = FakeClient([_response()])
+
+        audit = _analyze(
+            client,
+            _analyses(RequirementStatus.PASS),
+            flags=[_lint_flag()],
+        )
+
+        assert audit.static_findings == 1
+        assert audit.findings[0].origin is FindingOrigin.STATIC_LINTER
+        assert audit.findings[0].evidence == ["заполняются тестировщиками"]
+        assert audit.verdict is VerdictStatus.BLOCKED
+
+    def test_rejected_document_flag_is_dropped(self) -> None:
+        response = LLMSetAuditResponse(
+            summary="Набор согласован.",
+            goal_coverage="Цель покрыта.",
+            findings=[],
+            rejected_flag_ids=["LINT-001"],
+        )
+        client = FakeClient([response])
+
+        audit = _analyze(
+            client,
+            _analyses(RequirementStatus.PASS),
+            flags=[_lint_flag()],
+        )
+
+        assert audit.findings == []
+        assert audit.static_findings == 0
+        assert audit.verdict is VerdictStatus.READY
+
+    def test_model_finding_is_not_duplicated_by_the_linter(self) -> None:
+        finding = _finding(
+            category=SetFindingCategory.INCOMPLETE_SECTION,
+            severity=Severity.HIGH,
+            title="Раздел тестирования не заполнен",
+            description="Вместо сценариев стоит заглушка.",
+            evidence=["заполняются тестировщиками"],
+        )
+        client = FakeClient([_response([finding])])
+
+        audit = _analyze(
+            client,
+            _analyses(RequirementStatus.PASS),
+            flags=[_lint_flag()],
+        )
+
+        assert len(audit.findings) == 1
+        assert audit.static_findings == 0
+        assert audit.findings[0].origin is FindingOrigin.LLM
+
+
 class TestPromptAndRetries:
     def test_prompt_carries_full_document_and_requirements(self) -> None:
         client = FakeClient([_response()])
@@ -223,11 +312,14 @@ class TestPromptAndRetries:
         _analyze(client, [])
 
         prompt = client.calls[0]["user_prompt"]
-        assert "### ПОЛНЫЙ ТЕКСТ ДОКУМЕНТА" in prompt
-        assert "Переводы и снятие наличных не учитываются." in prompt
+        system_prompt = client.calls[0]["system_prompt"]
+        assert "### FULL SOURCE DOCUMENT" in system_prompt
+        assert "Переводы и снятие наличных не учитываются." in system_prompt
+        assert "### EXTRACTED REQUIREMENTS (JSON)" in prompt
         assert '"original_id": "Ф-1"' in prompt
-        assert client.calls[0]["system_prompt"].startswith(
-            "Ты — старший системный аналитик"
+        assert "TASK\nAudit the requirement set as a whole." in prompt
+        assert system_prompt.startswith(
+            "You are a senior requirements quality analyst"
         )
 
     def test_invalid_json_is_retried(self) -> None:

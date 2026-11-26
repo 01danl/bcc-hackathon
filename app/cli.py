@@ -19,10 +19,12 @@ from app.llm.client import (
     build_llm_client,
 )
 from app.models.analysis import (
+    FindingOrigin,
     RequirementAnalysisCollection,
     RequirementStatus,
     Severity,
 )
+from app.models.lint import LintResult
 from app.models.requirement import (
     Requirement,
     RequirementCollection,
@@ -32,7 +34,9 @@ from app.models.set_audit import RequirementSetAudit, SetFinding, VerdictStatus
 from app.services.chunking import DocumentChunker
 from app.services.requirement_analyzer import RequirementAnalyzer
 from app.services.requirement_extractor import RequirementExtractor
+from app.services.requirement_triage import RequirementTriage
 from app.services.set_analyzer import RequirementSetAnalyzer
+from app.services.static_linter import StaticLinter
 
 # The agent's own code: git is queried here, and only changes under it
 # mark the reported commit as dirty.
@@ -114,7 +118,8 @@ def analyze(
     passport = _passport(settings, document, len(chunks))
 
     extractor = RequirementExtractor(extractor_client, chunker)
-    analyzer = RequirementAnalyzer(auditor_client)
+    triage = RequirementTriage(extractor_client)
+    analyzer = RequirementAnalyzer(auditor_client, triage=triage)
     set_analyzer = RequirementSetAnalyzer(auditor_client)
 
     typer.secho(
@@ -128,6 +133,15 @@ def analyze(
 
     for warning in extractor.validate(collection):
         typer.secho(f"Предупреждение: {warning}", fg=typer.colors.YELLOW, err=True)
+
+    lint_result = StaticLinter().analyze(document.text, collection)
+    if lint_result.all_flags:
+        typer.echo(
+            f"Статический линтер: {len(lint_result.all_flags)} детерминированных "
+            "замечаний (уйдут аудитору как pre_detected_flags)."
+        )
+    else:
+        typer.echo("Статический линтер: детерминированных замечаний нет.")
 
     extraction_path = _json_path(output_path, "requirements")
     if save_json:
@@ -152,6 +166,7 @@ def analyze(
         analyses = analyzer.analyze_all(
             collection,
             document_text=document.text,
+            pre_detected_flags=lint_result.requirement_flags,
             progress=_print_progress,
         )
     except LLMError as exc:
@@ -163,10 +178,18 @@ def analyze(
             )
         _fail(f"Ошибка LLM при анализе требований: {exc}")
 
+    typer.echo(
+        f"  Глубокая проверка: {analyses.deep_audited_requirements}, "
+        f"пропущено по triage: {analyses.skipped_requirements}."
+    )
+    if analyses.triage_summary:
+        typer.echo(f"  Triage: {analyses.triage_summary}")
+
     analysis_path = _json_path(output_path, "analysis")
     analysis_payload: dict[str, object] = {
         "passport": passport,
         "summary": _summary(analyses),
+        "lint": lint_result.model_dump(mode="json"),
         "analyses": [
             analysis.model_dump(mode="json") for analysis in analyses.analyses
         ],
@@ -176,7 +199,12 @@ def analyze(
 
     typer.secho("Проверка набора требований целиком...", bold=True)
     try:
-        set_audit = set_analyzer.analyze(document.text, collection, analyses.analyses)
+        set_audit = set_analyzer.analyze(
+            document.text,
+            collection,
+            analyses.analyses,
+            pre_detected_flags=lint_result.document_flags,
+        )
     except LLMError as exc:
         if save_json:
             typer.secho(
@@ -199,6 +227,7 @@ def analyze(
         collection=collection,
         analyses=analyses,
         set_audit=set_audit,
+        lint_result=lint_result,
         chunk_count=len(chunks),
     )
 
@@ -209,6 +238,7 @@ def analyze(
         collection=collection,
         analyses=analyses,
         set_audit=set_audit,
+        lint_result=lint_result,
     )
 
 
@@ -225,6 +255,7 @@ def _print_summary(
     collection: RequirementCollection,
     analyses: RequirementAnalysisCollection,
     set_audit: RequirementSetAudit,
+    lint_result: LintResult,
 ) -> None:
     """Print a short execution summary."""
     status_counts = analyses.by_status()
@@ -234,6 +265,10 @@ def _print_summary(
         typer.echo(f"  {status.value}: {status_counts.get(status, 0)}")
     typer.echo(f"  Находок: {analyses.finding_count}")
     typer.echo(f"  Находок уровня набора: {len(set_audit.findings)}")
+    typer.echo(
+        f"  Флагов линтера: {len(lint_result.all_flags)}, "
+        f"в отчёте: {analyses.static_findings + set_audit.static_findings}"
+    )
     typer.secho(
         f"  Вердикт: {set_audit.verdict.value}", fg=_verdict_color(set_audit.verdict)
     )
@@ -322,6 +357,11 @@ def _summary(analyses: RequirementAnalysisCollection) -> dict[str, object]:
     return {
         "requirements": len(analyses.analyses),
         "findings": analyses.finding_count,
+        "deep_audited_requirements": analyses.deep_audited_requirements,
+        "skipped_requirements": analyses.skipped_requirements,
+        "static_findings": analyses.static_findings,
+        "triage_summary": analyses.triage_summary,
+        "triage_fallback_used": analyses.triage_fallback_used,
         "status": {
             status.value: status_counter.get(status, 0)
             for status in RequirementStatus
@@ -340,6 +380,7 @@ def _write_report(
     collection: RequirementCollection,
     analyses: RequirementAnalysisCollection,
     set_audit: RequirementSetAudit,
+    lint_result: LintResult,
     chunk_count: int,
 ) -> None:
     """Write the Markdown report with both analysis levels and the verdict."""
@@ -384,6 +425,8 @@ def _write_report(
     if not collection.requirements:
         lines.append("| — | — | — | — | Требования не извлечены |")
 
+    lines.extend(_lint_lines(lint_result))
+
     lines.extend(["", "## Проверка каждого требования", ""])
     for analysis in analyses.analyses:
         lines.append(f"### {analysis.requirement_id} — {analysis.status.value}")
@@ -394,14 +437,15 @@ def _write_report(
             continue
         lines.extend(
             [
-                "| Статус | Критерий | Severity | Проблема | Доказательство | Рекомендация |",
-                "| :--- | :--- | :--- | :--- | :--- | :--- |",
+                "| Статус | Критерий | Severity | Источник | Проблема | Доказательство | Рекомендация |",
+                "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
             ]
         )
         for finding in analysis.findings:
             lines.append(
                 f"| {finding.status.value} | {finding.criterion.value} | "
-                f"{finding.severity.value} | {_cell(finding.explanation)} | "
+                f"{finding.severity.value} | {_origin_label(finding.origin)} | "
+                f"{_cell(finding.explanation)} | "
                 f"{_cell(finding.evidence)} | {_cell(finding.recommendation)} |"
             )
         lines.append("")
@@ -418,6 +462,10 @@ def _write_report(
             f"- Требований: {summary['requirements']}.",
             f"- Находок: {summary['findings']}.",
             f"- Находок уровня набора: {len(set_audit.findings)}.",
+            f"- Глубокая проверка: {summary['deep_audited_requirements']}, "
+            f"пропущено по triage: {summary['skipped_requirements']}.",
+            f"- Флагов статического линтера: {len(lint_result.all_flags)}, "
+            f"включено в отчёт: {summary['static_findings'] + set_audit.static_findings}.",
         ]
     )
     status_summary = summary["status"]
@@ -459,6 +507,36 @@ def _write_report(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _lint_lines(lint_result: LintResult) -> list[str]:
+    """Render the deterministic lint flags that ran before the auditor."""
+    flags = lint_result.all_flags
+    lines = ["", "## Статический линтер", ""]
+    if not flags:
+        lines.append("Детерминированных дефектов не найдено.")
+        return lines
+    lines.extend(
+        [
+            "| ID | Область | Категория | Severity | Сообщение | Доказательство |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for flag in flags:
+        scope = flag.requirement_id or "документ"
+        if flag.related_req_ids and not flag.requirement_id:
+            scope += f" ({', '.join(flag.related_req_ids)})"
+        lines.append(
+            f"| {_cell(flag.flag_id)} | {_cell(scope)} | "
+            f"{_cell(flag.category.value)} | {flag.severity.value} | "
+            f"{_cell(flag.message)} | {_cell(flag.evidence)} |"
+        )
+    return lines
+
+
+def _origin_label(origin: FindingOrigin) -> str:
+    """Human-readable source of a finding."""
+    return "линтер" if origin is FindingOrigin.STATIC_LINTER else "модель"
 
 
 def _set_audit_lines(
@@ -509,6 +587,7 @@ def _set_finding_lines(
         "",
         f"- Категория: {finding.category.value}",
         f"- Severity: {finding.severity.value}",
+        f"- Источник: {_origin_label(finding.origin)}",
         f"- Связанные требования: {related or '—'}",
         f"- Описание: {finding.description}",
         "- Доказательство:",
