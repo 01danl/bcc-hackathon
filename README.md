@@ -1,5 +1,20 @@
 # AI Requirements Reviewer
 
+## Быстрый запуск для проверки
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Откройте .env и вставьте свой LLM_API_KEY (OpenRouter)
+python agent.py --input docs/requirements.md --output report.md
+```
+
+`docs/requirements.md` — путь к проверяемому ТЗ; для документа организаторов
+используйте `documents_organization/requirements.md`. Отчёт появится по пути,
+указанному в `--output`; недостающие каталоги создаются автоматически.
+
 ИИ-агент для статической проверки документов с требованиями: извлекает
 отдельные требования, проверяет качество каждого из них по критериям
 ISO/IEC/IEEE 29148 и IEEE Std 830 и сохраняет структурированные результаты.
