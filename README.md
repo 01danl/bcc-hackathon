@@ -142,8 +142,10 @@ OpenRouter и объявляют параметр `reasoning`.
 
 ## Запуск
 
+Основной способ — корневой `agent.py`, без подкоманд:
+
 ```bash
-python -m app.main analyze \
+python agent.py \
   --input documents_organization/requirements.md \
   --output reports/report.md
 ```
@@ -151,7 +153,15 @@ python -m app.main analyze \
 Или напрямую через venv:
 
 ```bash
-.venv/bin/python -m app.main analyze \
+.venv/bin/python agent.py \
+  --input documents_organization/requirements.md \
+  --output reports/report.md
+```
+
+Для обратной совместимости остаётся и старый вызов с подкомандой `analyze`:
+
+```bash
+python -m app.main analyze \
   --input documents_organization/requirements.md \
   --output reports/report.md
 ```
@@ -167,7 +177,7 @@ python -m app.main analyze \
 - `reports/report.analysis.json` — находки по каждому требованию, статусы,
   severity, аудит набора и вердикт.
 
-Промежуточные JSON можно отключить флагом `--no-save-json`.
+В старом CLI промежуточные JSON можно отключить флагом `--no-save-json`.
 
 Если ключ не задан, API недоступен, закончилась квота или ответ модели
 невалиден, команда печатает понятную ошибку и завершается с кодом `1`.
