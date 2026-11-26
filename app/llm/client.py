@@ -54,7 +54,6 @@ class LLMClient:
         api_key: str | None,
         base_url: str | None,
         model: str | None,
-        timeout: float = 60.0,
         max_retries: int = 2,
         client: Any | None = None,
         extra_body: dict[str, Any] | None = None,
@@ -74,7 +73,6 @@ class LLMClient:
             )
 
         self._model = model.strip()
-        self._timeout = timeout
         # Provider options such as OpenRouter's reasoning effort are sent as
         # extra body fields on every request made by this client.
         self._extra_body = dict(extra_body) if extra_body else None
@@ -85,7 +83,9 @@ class LLMClient:
         self._client = client or OpenAI(
             api_key=api_key.strip(),
             base_url=base_url.strip(),
-            timeout=timeout,
+            # No request timeout: a long document or a slow reasoning model
+            # must not be cut off by an artificial deadline.
+            timeout=None,
             max_retries=max_retries,
         )
 
@@ -161,7 +161,7 @@ class LLMClient:
         except openai.OpenAIError as exc:
             raise _map_api_error(exc) from exc
 
-        return _extract_content(completion, self._timeout)
+        return _extract_content(completion)
 
 
 def build_llm_client(settings: Settings) -> LLMClient:
@@ -174,7 +174,6 @@ def build_llm_client(settings: Settings) -> LLMClient:
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         model=settings.llm_model,
-        timeout=settings.llm_timeout,
         max_retries=settings.llm_max_retries,
         extra_body=settings.request_extra_body,
     )
@@ -225,7 +224,7 @@ def _unwrap_json_string(value: Any) -> Any:
     return value
 
 
-def _extract_content(completion: Any, timeout: float) -> str:
+def _extract_content(completion: Any) -> str:
     """Pull plain text out of an OpenAI-compatible completion object."""
     choices = getattr(completion, "choices", None)
     if not choices:
@@ -247,8 +246,8 @@ def _extract_content(completion: Any, timeout: float) -> str:
 
     if not content or not str(content).strip():
         raise LLMResponseError(
-            f"LLM returned an empty response (timeout setting: {timeout:g}s). "
-            "Check the stage's reasoning effort and the provider's output limit."
+            "LLM returned an empty response. Check the stage's reasoning "
+            "effort and the provider's output limit."
         )
     return str(content)
 
@@ -280,7 +279,8 @@ def _map_api_error(exc: openai.OpenAIError) -> LLMError:
         )
     if isinstance(exc, openai.APITimeoutError):
         return LLMRequestError(
-            "LLM API request timed out. Increase LLM_TIMEOUT or retry."
+            "LLM API request timed out. Check the network or provider status, "
+            "or retry."
         )
     if isinstance(exc, openai.APIConnectionError):
         return LLMRequestError(

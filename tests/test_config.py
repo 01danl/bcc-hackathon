@@ -15,7 +15,6 @@ _ENV_NAMES = (
     "AUDITOR_MODEL",
     "EXTRACTOR_EFFORT",
     "AUDITOR_EFFORT",
-    "LLM_TIMEOUT",
     "LLM_MAX_RETRIES",
     "LLM_CHUNK_MAX_CHARS",
     "LLM_CHUNK_OVERLAP_CHARS",
@@ -50,7 +49,6 @@ class TestSettings:
         monkeypatch.setenv("LLM_API_KEY", "  sk-or-v1-test  ")
         monkeypatch.setenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
         monkeypatch.setenv("LLM_MODEL", "test/model")
-        monkeypatch.setenv("LLM_TIMEOUT", "12.5")
         monkeypatch.setenv("LLM_MAX_RETRIES", "0")
         monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "800")
         monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "100")
@@ -59,7 +57,6 @@ class TestSettings:
 
         assert settings.llm_api_key == "sk-or-v1-test"
         assert settings.llm_model == "test/model"
-        assert settings.llm_timeout == 12.5
         assert settings.llm_max_retries == 0
         assert settings.chunk_max_chars == 800
         assert settings.chunk_overlap_chars == 100
@@ -72,9 +69,9 @@ class TestSettings:
     def test_invalid_integer_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("LLM_TIMEOUT", "not-a-number")
+        monkeypatch.setenv("LLM_MAX_RETRIES", "not-a-number")
 
-        with pytest.raises(config.SettingsError, match="LLM_TIMEOUT"):
+        with pytest.raises(config.SettingsError, match="LLM_MAX_RETRIES"):
             _load_without_dotenv(tmp_path)
 
     def test_overlap_must_be_smaller_than_chunk(

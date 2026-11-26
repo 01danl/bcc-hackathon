@@ -138,7 +138,6 @@ OpenRouter и объявляют параметр `reasoning`.
 | `AUDITOR_MODEL` | нет | `LLM_MODEL` | Модель проверки требований и набора |
 | `EXTRACTOR_EFFORT` | нет | `low` | `reasoning.effort` для извлечения |
 | `AUDITOR_EFFORT` | нет | `medium` | `reasoning.effort` для аудита |
-| `LLM_TIMEOUT` | нет | `60` | Таймаут одного запроса, секунды |
 | `LLM_MAX_RETRIES` | нет | `2` | Повторы SDK при сетевых ошибках/429 |
 | `LLM_CHUNK_MAX_CHARS` | нет | `6000` | Максимальный размер чанка |
 | `LLM_CHUNK_OVERLAP_CHARS` | нет | `600` | Перекрытие соседних чанков |

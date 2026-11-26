@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 
 DEFAULT_AGENT_VERSION = "0.2.0"
 DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_LLM_TIMEOUT = 60.0
 DEFAULT_LLM_MAX_RETRIES = 2
 DEFAULT_CHUNK_MAX_CHARS = 6000
 DEFAULT_CHUNK_OVERLAP_CHARS = 600
@@ -66,7 +65,6 @@ class Settings:
     auditor_model: str | None = None
     extractor_effort: str | None = None
     auditor_effort: str | None = None
-    llm_timeout: float = DEFAULT_LLM_TIMEOUT
     llm_max_retries: int = DEFAULT_LLM_MAX_RETRIES
     chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS
     chunk_overlap_chars: int = DEFAULT_CHUNK_OVERLAP_CHARS
@@ -141,7 +139,6 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
             "LLM_CHUNK_OVERLAP_CHARS must be smaller than LLM_CHUNK_MAX_CHARS"
         )
 
-    timeout = _read_float("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, minimum=1.0)
     retries = _read_int("LLM_MAX_RETRIES", DEFAULT_LLM_MAX_RETRIES, minimum=0)
     extractor_effort = _read_effort("EXTRACTOR_EFFORT", DEFAULT_EXTRACTOR_EFFORT)
     auditor_effort = _read_effort("AUDITOR_EFFORT", DEFAULT_AUDITOR_EFFORT)
@@ -155,7 +152,6 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         auditor_model=_read_text("AUDITOR_MODEL"),
         extractor_effort=extractor_effort,
         auditor_effort=auditor_effort,
-        llm_timeout=timeout,
         llm_max_retries=retries,
         chunk_max_chars=max_chars,
         chunk_overlap_chars=overlap,
@@ -194,19 +190,6 @@ def _read_int(name: str, default: int, *, minimum: int) -> int:
         value = int(raw)
     except ValueError as exc:
         raise SettingsError(f"{name} must be an integer, got {raw!r}") from exc
-    if value < minimum:
-        raise SettingsError(f"{name} must be >= {minimum}, got {value}")
-    return value
-
-
-def _read_float(name: str, default: float, *, minimum: float) -> float:
-    raw = _read_text(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise SettingsError(f"{name} must be a number, got {raw!r}") from exc
     if value < minimum:
         raise SettingsError(f"{name} must be >= {minimum}, got {value}")
     return value
