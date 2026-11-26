@@ -91,14 +91,12 @@ def analyze(
             settings.with_model(
                 settings.extractor_model,
                 extra_body=reasoning_extra_body(settings.extractor_effort),
-                max_tokens=settings.extractor_max_tokens,
             )
         )
         auditor_client = build_llm_client(
             settings.with_model(
                 settings.auditor_model,
                 extra_body=reasoning_extra_body(settings.auditor_effort),
-                max_tokens=settings.auditor_max_tokens,
             )
         )
     except LLMConfigurationError as exc:
@@ -303,8 +301,6 @@ def _passport(
         "auditor_model": settings.auditor_model,
         "extractor_effort": settings.extractor_effort,
         "auditor_effort": settings.auditor_effort,
-        "extractor_max_tokens": settings.extractor_max_tokens,
-        "auditor_max_tokens": settings.auditor_max_tokens,
         "llm_base_url": settings.llm_base_url,
         "chunks": chunk_count,
     }
@@ -404,8 +400,7 @@ def _write_report(
         f"| Модель аудита | {_cell(str(passport['auditor_model'] or '—'))} |",
         f"| Режим извлечения | effort={_cell(str(passport['extractor_effort'] or '—'))} |",
         f"| Режим аудита | effort={_cell(str(passport['auditor_effort'] or '—'))} |",
-        f"| Бюджет извлечения | {passport['extractor_max_tokens']} токенов |",
-        f"| Бюджет аудита | {passport['auditor_max_tokens']} токенов |",
+        "| Бюджет токенов | без ограничения (лимит провайдера) |",
         f"| LLM base URL | {_cell(str(passport['llm_base_url']))} |",
         f"| Чанков отправлено | {chunk_count} |",
         f"| Требований извлечено | {len(collection)} |",

@@ -22,8 +22,6 @@ DEFAULT_CHUNK_MAX_CHARS = 6000
 DEFAULT_CHUNK_OVERLAP_CHARS = 600
 DEFAULT_EXTRACTOR_EFFORT = "low"
 DEFAULT_AUDITOR_EFFORT = "medium"
-DEFAULT_EXTRACTOR_MAX_TOKENS = 4000
-DEFAULT_AUDITOR_MAX_TOKENS = 16000
 
 # OpenRouter normalizes reasoning across providers. The two stages use
 # different models, and their allowed effort levels are not identical.
@@ -68,13 +66,10 @@ class Settings:
     auditor_model: str | None = None
     extractor_effort: str | None = None
     auditor_effort: str | None = None
-    extractor_max_tokens: int = DEFAULT_EXTRACTOR_MAX_TOKENS
-    auditor_max_tokens: int = DEFAULT_AUDITOR_MAX_TOKENS
     llm_timeout: float = DEFAULT_LLM_TIMEOUT
     llm_max_retries: int = DEFAULT_LLM_MAX_RETRIES
     chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS
     chunk_overlap_chars: int = DEFAULT_CHUNK_OVERLAP_CHARS
-    llm_max_tokens: int | None = field(default=None, repr=False)
     request_extra_body: dict[str, Any] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -89,19 +84,18 @@ class Settings:
         model: str | None,
         *,
         extra_body: dict[str, Any] | None = None,
-        max_tokens: int | None = None,
     ) -> Settings:
         """Return a copy pinned to ``model`` for a stage's LLM client.
 
-        ``extra_body`` carries OpenRouter reasoning options and ``max_tokens``
-        leaves room for thinking tokens. Only the copy changes, so one
-        settings object can pin different options for the two stages.
+        ``extra_body`` carries OpenRouter reasoning options. No response-token
+        cap is applied: the provider's own limit is used. Only the copy
+        changes, so one settings object can pin different options for the two
+        stages.
         """
         return replace(
             self,
             llm_model=model,
             request_extra_body=extra_body,
-            llm_max_tokens=max_tokens,
         )
 
 
@@ -151,12 +145,6 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
     retries = _read_int("LLM_MAX_RETRIES", DEFAULT_LLM_MAX_RETRIES, minimum=0)
     extractor_effort = _read_effort("EXTRACTOR_EFFORT", DEFAULT_EXTRACTOR_EFFORT)
     auditor_effort = _read_effort("AUDITOR_EFFORT", DEFAULT_AUDITOR_EFFORT)
-    extractor_max_tokens = _read_int(
-        "EXTRACTOR_MAX_TOKENS", DEFAULT_EXTRACTOR_MAX_TOKENS, minimum=1000
-    )
-    auditor_max_tokens = _read_int(
-        "AUDITOR_MAX_TOKENS", DEFAULT_AUDITOR_MAX_TOKENS, minimum=1000
-    )
 
     settings = Settings(
         agent_version=_read_text("AGENT_VERSION") or DEFAULT_AGENT_VERSION,
@@ -167,8 +155,6 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         auditor_model=_read_text("AUDITOR_MODEL"),
         extractor_effort=extractor_effort,
         auditor_effort=auditor_effort,
-        extractor_max_tokens=extractor_max_tokens,
-        auditor_max_tokens=auditor_max_tokens,
         llm_timeout=timeout,
         llm_max_retries=retries,
         chunk_max_chars=max_chars,

@@ -232,7 +232,7 @@ class TestCompleteJson:
         assert fake.calls[0]["model"] == "test/model"
         assert "temperature" not in fake.calls[0]
 
-    def test_max_tokens_is_forwarded(self) -> None:
+    def test_no_token_limit_is_sent(self) -> None:
         payload = {"requirements": []}
         fake = _FakeOpenAI([_completion(json.dumps(payload))])
         client = LLMClient(
@@ -240,7 +240,6 @@ class TestCompleteJson:
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             client=fake,
-            max_tokens=16000,
         )
 
         client.complete_json(
@@ -249,7 +248,7 @@ class TestCompleteJson:
             response_model=LLMExtractionResponse,
         )
 
-        assert fake.calls[0]["max_tokens"] == 16000
+        assert "max_tokens" not in fake.calls[0]
         assert "temperature" not in fake.calls[0]
 
     def test_extra_body_survives_json_mode_retry(self) -> None:

@@ -428,8 +428,6 @@ class TestCliSetAudit:
             auditor_model="heavy/model",
             extractor_effort="low",
             auditor_effort="max",
-            extractor_max_tokens=4000,
-            auditor_max_tokens=16000,
         )
         pinned: list[Settings] = []
 
@@ -456,12 +454,9 @@ class TestCliSetAudit:
         assert pinned[1].request_extra_body == {
             "reasoning": {"effort": "max", "exclude": True}
         }
-        assert pinned[0].llm_max_tokens == 4000
-        assert pinned[1].llm_max_tokens == 16000
         assert "| Режим извлечения | effort=low |" in report
         assert "| Режим аудита | effort=max |" in report
-        assert "| Бюджет извлечения | 4000 токенов |" in report
-        assert "| Бюджет аудита | 16000 токенов |" in report
+        assert "| Бюджет токенов | без ограничения (лимит провайдера) |" in report
 
     def test_passport_names_agent_version_and_commit(
         self, monkeypatch: Any, tmp_path: Path

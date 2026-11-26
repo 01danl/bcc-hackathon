@@ -15,8 +15,6 @@ _ENV_NAMES = (
     "AUDITOR_MODEL",
     "EXTRACTOR_EFFORT",
     "AUDITOR_EFFORT",
-    "EXTRACTOR_MAX_TOKENS",
-    "AUDITOR_MAX_TOKENS",
     "LLM_TIMEOUT",
     "LLM_MAX_RETRIES",
     "LLM_CHUNK_MAX_CHARS",
@@ -43,8 +41,6 @@ class TestSettings:
         assert settings.llm_base_url == config.DEFAULT_LLM_BASE_URL
         assert settings.extractor_effort == "low"
         assert settings.auditor_effort == "medium"
-        assert settings.extractor_max_tokens == 4000
-        assert settings.auditor_max_tokens == 16000
         assert settings.chunk_max_chars == config.DEFAULT_CHUNK_MAX_CHARS
         assert settings.chunk_overlap_chars == config.DEFAULT_CHUNK_OVERLAP_CHARS
 
@@ -176,17 +172,6 @@ class TestReasoningOptions:
         assert settings.extractor_effort == "low"
         assert settings.auditor_effort == "max"
 
-    def test_max_tokens_are_read_from_environment(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("EXTRACTOR_MAX_TOKENS", "6000")
-        monkeypatch.setenv("AUDITOR_MAX_TOKENS", "20000")
-
-        settings = _load_without_dotenv(tmp_path)
-
-        assert settings.extractor_max_tokens == 6000
-        assert settings.auditor_max_tokens == 20000
-
     @pytest.mark.parametrize(
         ("name", "value"),
         [("EXTRACTOR_EFFORT", "ultra"), ("AUDITOR_EFFORT", "extreme")],
@@ -236,17 +221,13 @@ class TestReasoningOptions:
         }
         assert config.reasoning_extra_body(None) is None
 
-    def test_with_model_pins_extra_body_and_max_tokens(self) -> None:
+    def test_with_model_pins_extra_body_only(self) -> None:
         settings = config.Settings(llm_model="legacy/model")
         extra = {"reasoning": {"effort": "max", "exclude": True}}
 
-        pinned = settings.with_model(
-            "heavy/model", extra_body=extra, max_tokens=16000
-        )
+        pinned = settings.with_model("heavy/model", extra_body=extra)
 
         assert pinned.llm_model == "heavy/model"
         assert pinned.request_extra_body == extra
-        assert pinned.llm_max_tokens == 16000
         assert settings.llm_model == "legacy/model"
         assert settings.request_extra_body is None
-        assert settings.llm_max_tokens is None

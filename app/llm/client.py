@@ -58,7 +58,6 @@ class LLMClient:
         max_retries: int = 2,
         client: Any | None = None,
         extra_body: dict[str, Any] | None = None,
-        max_tokens: int | None = None,
     ) -> None:
         if not api_key or not api_key.strip():
             raise LLMConfigurationError(
@@ -79,8 +78,8 @@ class LLMClient:
         # Provider options such as OpenRouter's reasoning effort are sent as
         # extra body fields on every request made by this client.
         self._extra_body = dict(extra_body) if extra_body else None
-        # Reasoning tokens share this budget with the visible answer.
-        self._max_tokens = max_tokens
+        # No response-token cap is sent: the provider's own limit applies, so
+        # a long document or a long reasoning trace cannot be cut off early.
         # The API key is intentionally not stored on the instance. It is
         # passed straight to the SDK client, which owns it.
         self._client = client or OpenAI(
@@ -140,8 +139,8 @@ class LLMClient:
         }
         # Claude Haiku 5.5 rejects any temperature other than 1, so no
         # sampling parameter is sent; prompts stay the source of determinism.
-        if self._max_tokens is not None:
-            request["max_tokens"] = self._max_tokens
+        # No ``max_tokens`` is sent either — the model may use as many output
+        # and reasoning tokens as the provider allows.
         if self._extra_body:
             request["extra_body"] = self._extra_body
         try:
@@ -178,7 +177,6 @@ def build_llm_client(settings: Settings) -> LLMClient:
         timeout=settings.llm_timeout,
         max_retries=settings.llm_max_retries,
         extra_body=settings.request_extra_body,
-        max_tokens=settings.llm_max_tokens,
     )
 
 
@@ -249,7 +247,8 @@ def _extract_content(completion: Any, timeout: float) -> str:
 
     if not content or not str(content).strip():
         raise LLMResponseError(
-            f"LLM returned an empty response (timeout setting: {timeout:g}s)."
+            f"LLM returned an empty response (timeout setting: {timeout:g}s). "
+            "Check the stage's reasoning effort and the provider's output limit."
         )
     return str(content)
 
