@@ -9,6 +9,7 @@ reported with overlapping evidence are not duplicated.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from app.models.analysis import FindingOrigin, LLMBatchFinding
@@ -25,6 +26,9 @@ _SET_CATEGORY_BY_LINT = {
     LintCategory.HTTP_METHOD_MISMATCH: SetFindingCategory.INTEGRATION_MISMATCH,
     LintCategory.VAGUE_WORDING: SetFindingCategory.AMBIGUOUS_REQUIREMENT,
 }
+
+_TITLE_LIMIT = 90
+_QUOTED_SPAN_RE = re.compile(r"«[^»]*»")
 
 
 def merge_requirement_flags(
@@ -120,8 +124,55 @@ def _set_duplicate(findings: Sequence[SetFinding], flag: LintFlag) -> bool:
 
 
 def _flag_title(flag: LintFlag) -> str:
-    """Build a short title from the first sentence of the lint message."""
-    sentence = flag.message.split(". ", 1)[0].strip()
-    if len(sentence) > 120:
-        sentence = sentence[:117].rstrip() + "..."
-    return sentence or flag.category.value
+    """Build a short title without cutting a quoted fragment.
+
+    A dot inside quotes (for example ``#### 200. Successful — Created``) is
+    not a sentence boundary, so the old ``split('. ')`` produced broken
+    titles. Prefer the text before the first colon outside quotes; when there
+    is no such colon, shorten to 90 characters on a word boundary outside
+    quotes.
+    """
+    text = " ".join(flag.message.split())
+    title = _before_unquoted_colon(text)
+    return _shorten_title(title) or flag.category.value
+
+
+def _before_unquoted_colon(text: str) -> str:
+    """Return the part before the first ``:`` that is not inside ``«...»``."""
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "«":
+            depth += 1
+        elif char == "»":
+            depth = max(0, depth - 1)
+        elif char == ":" and depth == 0:
+            return text[:index].strip()
+    return text
+
+
+def _shorten_title(text: str, limit: int = _TITLE_LIMIT) -> str:
+    """Shorten ``text`` on a word boundary without breaking a quoted span."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+
+    spans = [(match.start(), match.end()) for match in _QUOTED_SPAN_RE.finditer(text)]
+    candidates = [
+        index
+        for index, char in enumerate(text)
+        if index <= limit and char.isspace() and _is_safe_cut(text, index, spans)
+    ]
+    cut = candidates[-1] if candidates else limit
+    while cut > 0 and not _is_safe_cut(text, cut, spans):
+        cut -= 1
+    return text[:cut].rstrip(" ,.;:—-") + "..."
+
+
+def _is_safe_cut(
+    text: str, position: int, spans: list[tuple[int, int]]
+) -> bool:
+    """Return True when cutting at ``position`` leaves quotes intact."""
+    for start, end in spans:
+        if start < position < end:
+            return False
+    return text.count("«", 0, position) <= text.count("»", 0, position)
